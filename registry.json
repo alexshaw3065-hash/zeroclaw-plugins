@@ -9,7 +9,7 @@
         "tool"
       ],
       "url": "https://github.com/zeroclaw-labs/zeroclaw-plugins/releases/download/plugins/image-gen-fal-0.1.0.zip",
-      "sha256": "32484cdf2b48e50d503311b350a10d435a4a053275a18667c19c70c4b1a1f2a4"
+      "sha256": "27da1f413cbeadcfada40e16018229bc8c2d920ddffb631cb35ff366edf75e57"
     },
     {
       "name": "languagetool",
@@ -20,7 +20,18 @@
         "tool"
       ],
       "url": "https://github.com/zeroclaw-labs/zeroclaw-plugins/releases/download/plugins/languagetool-0.1.0.zip",
-      "sha256": "15c80377d7e93b64a07f6e27e72bab8e7178834df9ac10151eedd253fbdce2f7"
+      "sha256": "a4dbd7f3ca6f422d553fb8bcd658598c65173b6cd398c239b76dc00b24c2155b"
+    },
+    {
+      "name": "office-tools",
+      "version": "0.1.0",
+      "description": "Extract text/Markdown from Office documents (DOCX, XLSX, PPTX, DOC, XLS, PPT) passed as base64",
+      "author": "ZeroClaw Labs",
+      "capabilities": [
+        "tool"
+      ],
+      "url": "https://github.com/zeroclaw-labs/zeroclaw-plugins/releases/download/plugins/office-tools-0.1.0.zip",
+      "sha256": "1c59823bf4d7c1ce3a0b117a3b1852395b232e02d4ebaa869b0e792a558df338"
     },
     {
       "name": "sd-webui",
@@ -31,7 +42,7 @@
         "tool"
       ],
       "url": "https://github.com/zeroclaw-labs/zeroclaw-plugins/releases/download/plugins/sd-webui-0.1.0.zip",
-      "sha256": "0f0cfa139411b1876d7cf4eb5209a8bf57ef9695737566e72813f10e5ec61ab4"
+      "sha256": "a3cdf5832ac132ec2d4c337a364edf4810e99fd53a0cbc5697a4e493d430caf4"
     }
   ]
 }
