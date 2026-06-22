@@ -9,7 +9,7 @@
         "tool"
       ],
       "url": "https://github.com/zeroclaw-labs/zeroclaw-plugins/releases/download/plugins/mastodon-post-0.1.0.zip",
-      "sha256": "ed9d2791ff756cc3b99bb4dacdcd10ede5a1798ee0d3d5c8ed51d596cfafa970"
+      "sha256": "3779f79561e842f491359f43fd658185d6c277fe45a9873f3087440c8b40a6d2"
     },
     {
       "name": "wikipedia-summary",
@@ -20,7 +20,7 @@
         "tool"
       ],
       "url": "https://github.com/zeroclaw-labs/zeroclaw-plugins/releases/download/plugins/wikipedia-summary-0.1.0.zip",
-      "sha256": "11a3ccf41c5097669292f0d7c8340d65f9285950953bef01272a09dd005ff88e"
+      "sha256": "fcdbad77ed2cafbdc31629fba2e7c84606c492dcb71d3a3b2fd12d3f9947ab32"
     }
   ]
 }
