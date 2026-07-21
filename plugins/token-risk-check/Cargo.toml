@@ -1,0 +1,18 @@
+[package]
+name = "token-risk-check"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "T0 ZeroClaw plugin: red/amber/green scam-risk verdict for a Solana mint."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+zeroclaw-solana-core = { path = "../../solana-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# TODO once you're in Claude Code with real repo access: add whatever
+# wit-bindgen / generated-bindings dependency plugins/redact-text uses,
+# and wire src/lib.rs's shim module to the real generated exports.

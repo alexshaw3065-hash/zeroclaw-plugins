@@ -1,0 +1,8 @@
+name = "solana-pay-request"
+version = "0.1.0"
+wasm_path = "target/wasm32-wasip2/release/solana_pay_request.wasm"
+capabilities = ["execute"]
+# No permissions needed yet -- building a Solana Pay URL is pure string
+# formatting. Add "config_read" only if a default recipient address ends
+# up living in plugin config.
+permissions = []

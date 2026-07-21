@@ -1,0 +1,14 @@
+[package]
+name = "zeroclaw-solana-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pure-Rust, wasm32-wasip2-friendly core for talking to Solana from ZeroClaw tool plugins."
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bs58 = "0.5"

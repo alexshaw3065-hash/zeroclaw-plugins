@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = [
+    "solana-core",
+    "plugins/token-risk-check",
+    "plugins/solana-pay-request",
+    "plugins/payment-watch",
+]

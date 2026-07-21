@@ -1,0 +1,5 @@
+name = "payment-watch"
+version = "0.1.0"
+wasm_path = "target/wasm32-wasip2/release/payment_watch.wasm"
+capabilities = ["execute"]
+permissions = ["http_client", "config_read"]
