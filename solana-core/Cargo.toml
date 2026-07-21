@@ -12,3 +12,15 @@ crate-type = ["rlib"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bs58 = "0.5"
+base64 = "0.22"
+
+# This crate is never built standalone as part of a larger workspace: it is
+# vendored (byte-for-byte, via tools/sync_solana_core.py) into each plugin
+# that needs it, because the real zeroclaw-plugins CI builds every plugin
+# from an isolated copy of just that plugin's own directory plus wit/v0 (see
+# tools/ci/validate_components.sh) — a path dependency reaching outside a
+# plugin's own folder would not resolve there. This top-level copy is the
+# single canonical source a contributor edits; run
+# `python3 tools/sync_solana_core.py check` to verify the vendored copies
+# still match it, or `sync` to update them.
+[workspace]

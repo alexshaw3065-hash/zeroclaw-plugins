@@ -3,9 +3,9 @@
 
 name = "token-risk-check"
 version = "0.1.0"
-wasm_path = "target/wasm32-wasip2/release/token_risk_check.wasm"
+wasm_path = "token_risk_check.wasm"
 
-capabilities = ["execute"]
+capabilities = ["tool"]
 
 # http_client: to call the user's configured Solana RPC endpoint.
 # config_read: to read that RPC endpoint (and nothing else) from config.

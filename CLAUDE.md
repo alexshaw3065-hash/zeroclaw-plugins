@@ -69,14 +69,16 @@ this fused; don't refactor it into two independent, unconnected plugins.
 ## Repo layout
 
 ```
-solana-core/            pure Rust toolbox, no wasm deps, imported by all plugins
+solana-core/            canonical pure Rust toolbox, no wasm deps -- see "Vendoring" below
   src/pubkey.rs          base58 address parsing
   src/rpc.rs             JSON-RPC request building + response parsing (transport-agnostic)
   src/risk.rs            the shared scam-risk heuristic (assess())
+  src/token.rs           SPL Token / Token-2022 mint account parsing
 plugins/
   token-risk-check/      T0 — built furthest along, use as the pattern for the other two
   solana-pay-request/    T1 — stubbed, TODO in README.md
   payment-watch/         T0 — stubbed, TODO in README.md, must call risk::assess()
+tools/sync_solana_core.py  propagates solana-core/ into each plugin's vendored copy
 ```
 
 Each plugin folder needs, before it's submittable (see its own README.md
@@ -85,32 +87,68 @@ for the per-plugin checklist): layout matching `plugins/redact-text`,
 threat model + worked example + prompt-injection transcript, and an MIT
 LICENSE file.
 
-## Known gaps — do these before anything else compiles for real
+### Vendoring solana-core — no root workspace, no cross-plugin path deps
 
-This scaffold was written without live access to the ZeroClaw repo (no
-internet in the environment that generated it). Before writing new
-feature code:
+There is deliberately **no root `Cargo.toml`** in this repo (matching
+every other plugin here: each is a fully standalone crate with its own
+`[workspace]` marker). The real CI (`tools/ci/validate_components.sh`)
+builds every plugin from an **isolated snapshot containing only that
+plugin's own directory plus `wit/v0`** — nothing else. A path dependency
+reaching outside a plugin's folder (e.g. `../../solana-core`) would not
+resolve there, so `solana-core` cannot be a normal shared dependency.
 
-1. `git clone https://github.com/zeroclaw-labs/zeroclaw-plugins` alongside
-   this repo.
-2. Diff `plugins/redact-text` (the canonical reference plugin) against
-   this repo's layout and fix any mismatches.
-3. Read the real `.wit` files under `wit/v0` and replace the placeholder
-   `shim` module functions (marked `TODO` in each plugin's `src/lib.rs`)
-   with real generated bindings. **wit/v0 is explicitly experimental —
-   expect it to not match this scaffold exactly, and expect it to change
-   again later.**
-4. Look at `plugins/telegram` for a real published example of the
-   `http_client` permission in use.
-5. Run `rustup target add wasm32-wasip2` if not already installed.
+Instead: `solana-core/` at the repo root is the single canonical source
+you edit. Each plugin that needs it (`token-risk-check`, `payment-watch`,
+and `solana-pay-request` for address validation) carries its own literal
+copy at `plugins/<name>/solana-core/`, produced and verified by
+`tools/sync_solana_core.py`. **Whenever you change anything under
+`solana-core/src/`, run `python3 tools/sync_solana_core.py sync`
+afterward and commit the result** — the three copies are not symlinks,
+they are real files, and `check` (below) will fail if they drift.
+
+## Known gaps
+
+Resolved, now that this session has real repo access (the earlier version
+of this file listed these as open — keep this section as a log, not a
+todo list, so a future session doesn't redo the discovery):
+
+1. ~~Clone the real `zeroclaw-plugins` repo.~~ Done — this checkout *is*
+   the real fork (`github.com/alexshaw3065-hash/zeroclaw-plugins`,
+   forked from `zeroclaw-labs/zeroclaw-plugins`). A separate checkout of
+   the *other* (wrong, main `zeroclaw` daemon monorepo) repo this
+   scaffold was mistakenly built against the first time lives alongside
+   this one as read-only reference; never commit or push there.
+2. ~~Diff against `plugins/redact-text`.~~ Done — `wasm_path` and
+   `capabilities` in all three manifests were wrong (`capabilities`
+   must be `["tool"]`, not `["execute"]`, which isn't a valid
+   `PluginCapability`; `wasm_path` is a filename resolved relative to
+   the plugin directory at install time, not a `target/...` build path).
+   Fixed.
+3. ~~Wire real WIT bindings.~~ Done for `token-risk-check`
+   (`wit_bindgen::generate!` against `../../wit/v0`, matching
+   `redact-text`'s exact pattern — the shared top-level `wit/v0/` is
+   fine to reference directly, since CI's isolated snapshot copies it
+   alongside every plugin). `solana-pay-request` and `payment-watch`
+   still need their shims written when their turn in the build order
+   comes.
+4. ~~Look at `plugins/telegram` for an `http_client` example.~~ Done —
+   `token-risk-check`'s RPC calls use the same `waki::Client::new().post(url).json(&body).send()` /
+   `.json::<Value>()` pattern telegram, discord, and every other
+   HTTP-calling plugin here use.
+5. ~~Install `wasm32-wasip2`.~~ Done.
 
 ## Commands
 
-- `cargo test` — run from repo root, exercises all `core` modules across
-  the workspace. Must pass with no network access. Run this after every
-  change to any `core` module.
-- `cargo build --target wasm32-wasip2 --release` — only expected to work
-  once the shim TODOs above are resolved.
+Run per-crate (there is no root workspace — see "Vendoring" above):
+
+- `(cd solana-core && cargo test)` — the canonical core's own tests.
+- `(cd plugins/<name> && cargo test --locked)` — that plugin's host
+  tests. Must pass with no network access. Run after every change to a
+  `core` module or to `solana-core/` (after re-running `sync`).
+- `(cd plugins/<name> && cargo build --locked --target wasm32-wasip2 --release)`
+  — the real component build.
+- `python3 tools/sync_solana_core.py check` — verify no vendored
+  `solana-core` copy has drifted from the canonical one; `sync` to fix.
 
 ## Traps called out by the bounty sponsors — keep these in mind while coding
 

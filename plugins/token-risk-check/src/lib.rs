@@ -82,7 +82,7 @@ pub mod core {
         #[test]
         fn returns_green_for_a_clean_mint() {
             let args = Args {
-                mint: "11111111111111111111111111111111111111111".into(),
+                mint: "11111111111111111111111111111111".into(),
             };
             let facts = MintFacts {
                 top_holder_share_pct: 5.0,
@@ -95,7 +95,7 @@ pub mod core {
         #[test]
         fn returns_red_for_a_permanent_delegate() {
             let args = Args {
-                mint: "11111111111111111111111111111111111111111".into(),
+                mint: "11111111111111111111111111111111".into(),
             };
             let facts = MintFacts {
                 has_permanent_delegate: true,
@@ -133,51 +133,220 @@ pub mod core {
 }
 
 // --- wasm component shim -----------------------------------------------
-// Thin wrapper only. No logic beyond: parse JSON args, fetch facts over
-// the one allowed HTTP call, call into `core`, shape the result/error,
-// log via the structured logging import (never stdout). Replace the
-// placeholder bodies once the real WIT bindings are generated in Claude
-// Code and you can see plugins/redact-text's actual shape.
+// Thin wrapper only: parse JSON args, validate the address, read `rpc_url`
+// from the jailed `__config` section, make the two allowed RPC calls,
+// shape MintFacts, hand off to `core::run`, log via the structured
+// logging import (never stdout). Mirrors plugins/redact-text's shape.
 #[cfg(target_family = "wasm")]
-mod shim {
-    #[allow(unused_imports)]
-    use super::core;
+mod component {
+    wit_bindgen::generate!({
+        path: "../../wit/v0",
+        world: "tool-plugin",
+        features: ["plugins-wit-v0"],
+    });
 
-    pub fn name() -> String {
-        "token-risk-check".to_string()
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use crate::core::{self, Args};
+    use exports::zeroclaw::plugin::plugin_info::Guest as PluginInfo;
+    use exports::zeroclaw::plugin::tool::{Guest as Tool, ToolResult};
+    use zeroclaw::plugin::logging::{
+        log_record, LogLevel, PluginAction, PluginEvent, PluginOutcome,
+    };
+    use zeroclaw_solana_core::rpc::{
+        account_data_from_result, max_token_account_amount, parse_response_value, RpcRequest,
+    };
+    use zeroclaw_solana_core::{holder_share_pct, parse_mint_account, MintFacts, Pubkey};
+
+    struct TokenRiskCheck;
+
+    const PLUGIN_NAME: &str = "token-risk-check";
+    const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+    const TOOL_NAME: &str = "token-risk-check";
+
+    #[derive(serde::Deserialize)]
+    struct ExecuteArgs {
+        mint: String,
+        #[serde(rename = "__config", default)]
+        config: HashMap<String, String>,
     }
 
-    pub fn description() -> String {
-        "Given a Solana mint address, checks mint/freeze authority, holder \
-         concentration, LP status, and Token-2022 extensions, and returns \
-         a red/amber/green risk verdict with reasons. Read-only, never \
-         moves funds."
+    impl PluginInfo for TokenRiskCheck {
+        fn plugin_name() -> String {
+            PLUGIN_NAME.to_string()
+        }
+
+        fn plugin_version() -> String {
+            PLUGIN_VERSION.to_string()
+        }
+    }
+
+    impl Tool for TokenRiskCheck {
+        fn name() -> String {
+            TOOL_NAME.to_string()
+        }
+
+        fn description() -> String {
+            "Given a Solana mint address, checks mint/freeze authority, holder \
+             concentration, and Token-2022 extensions (transfer hooks, transfer \
+             fees, permanent delegate), and returns a red/amber/green risk \
+             verdict with reasons. Read-only, never moves funds."
+                .to_string()
+        }
+
+        fn parameters_schema() -> String {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "mint": {
+                        "type": "string",
+                        "description": "Base58 Solana mint address to check"
+                    }
+                },
+                "required": ["mint"]
+            })
             .to_string()
+        }
+
+        fn execute(args: String) -> Result<ToolResult, String> {
+            let parsed: ExecuteArgs = match serde_json::from_str(&args) {
+                Ok(a) => a,
+                Err(e) => {
+                    emit(PluginAction::Fail, PluginOutcome::Failure, "invalid arguments");
+                    return Ok(fail(format!("invalid arguments: {e}")));
+                }
+            };
+
+            // Validate the address before spending an RPC call on it. This is
+            // also what makes the tool fail closed on a prompt-injection
+            // attempt that stuffs instructions into `mint` instead of an
+            // address: `Pubkey::parse` only accepts 32 bytes of valid
+            // base58, so free text is rejected here, before anything else
+            // runs. See core::tests::prompt_injection_attempt_fails_closed
+            // for the same property proven at the pure-logic layer.
+            if let Err(e) = Pubkey::parse(&parsed.mint) {
+                emit(PluginAction::Fail, PluginOutcome::Failure, "invalid mint address");
+                return Ok(fail(format!("invalid mint address: {e}")));
+            }
+
+            let rpc_url = match parsed.config.get("rpc_url").filter(|v| !v.is_empty()) {
+                Some(u) => u.clone(),
+                None => {
+                    emit(PluginAction::Fail, PluginOutcome::Failure, "no rpc_url configured");
+                    return Ok(fail(
+                        "token-risk-check requires `rpc_url` to be set in this plugin's \
+                         config section (see README) -- no RPC endpoint is hardcoded."
+                            .to_string(),
+                    ));
+                }
+            };
+
+            let facts = match fetch_mint_facts(&rpc_url, &parsed.mint) {
+                Ok(f) => f,
+                Err(e) => {
+                    emit(PluginAction::Fail, PluginOutcome::Failure, "rpc fetch failed");
+                    return Ok(fail(e));
+                }
+            };
+
+            let core_args = Args { mint: parsed.mint };
+            match core::run(&core_args, &facts) {
+                Ok(output) => {
+                    let json = match serde_json::to_string(&output) {
+                        Ok(j) => j,
+                        Err(e) => return Err(format!("failed to encode result: {e}")),
+                    };
+                    emit(PluginAction::Complete, PluginOutcome::Success, "risk assessed");
+                    Ok(ToolResult { success: true, output: json, error: None })
+                }
+                Err(e) => {
+                    emit(PluginAction::Fail, PluginOutcome::Failure, "core rejected input");
+                    Ok(fail(e.to_string()))
+                }
+            }
+        }
     }
 
-    pub fn parameters_schema() -> String {
-        r#"{
-  "type": "object",
-  "properties": {
-    "mint": {
-      "type": "string",
-      "description": "Base58 Solana mint address to check"
-    }
-  },
-  "required": ["mint"]
-}"#
-        .to_string()
+    /// A `ToolResult` with `success: false` is a normal, model-visible
+    /// failure (bad args, unreachable RPC, ...) the LLM can react to; only
+    /// genuinely broken states should cross the boundary as `Err`.
+    fn fail(message: String) -> ToolResult {
+        ToolResult {
+            success: false,
+            output: String::new(),
+            error: Some(message),
+        }
     }
 
-    // TODO(claude-code): wire this to the real WIT `execute` export.
-    // Sketch of what it needs to do:
-    //
-    // pub fn execute(args_json: String) -> Result<String, String> {
-    //     let args: core::Args =
-    //         serde_json::from_str(&args_json).map_err(|e| e.to_string())?;
-    //     let rpc_url = read_config("rpc_url")?; // via config_read import
-    //     let facts = fetch_mint_facts(&rpc_url, &args.mint)?; // via http_client import + zeroclaw_solana_core::rpc
-    //     let output = core::run(&args, &facts).map_err(|e| e.to_string())?;
-    //     serde_json::to_string(&output).map_err(|e| e.to_string())
-    // }
+    fn emit(action: PluginAction, outcome: PluginOutcome, message: &str) {
+        log_record(
+            LogLevel::Info,
+            &PluginEvent {
+                function_name: "token_risk_check::tool::execute".to_string(),
+                action,
+                outcome: Some(outcome),
+                duration_ms: None,
+                attrs: None,
+                message: message.to_string(),
+            },
+        );
+    }
+
+    /// The shim's one job beyond glue: fetch a mint's on-chain facts over
+    /// the allowed HTTP call (two RPC round trips) and shape them into
+    /// `MintFacts` for `core::run`. Everything here is either a network
+    /// call or a call into host-tested `zeroclaw_solana_core` functions --
+    /// no risk logic lives in this file.
+    fn fetch_mint_facts(rpc_url: &str, mint: &str) -> Result<MintFacts, String> {
+        let account_result = rpc_call(
+            rpc_url,
+            "getAccountInfo",
+            json!([mint, {"encoding": "base64"}]),
+        )?;
+        let data = account_data_from_result(&account_result).map_err(|e| e.to_string())?;
+        let parsed_mint = parse_mint_account(&data).map_err(|e| e.to_string())?;
+
+        let largest_result = rpc_call(rpc_url, "getTokenLargestAccounts", json!([mint]))?;
+        let largest_amount =
+            max_token_account_amount(&largest_result).map_err(|e| e.to_string())?;
+
+        Ok(MintFacts {
+            mint_authority_active: parsed_mint.mint_authority_active,
+            freeze_authority_active: parsed_mint.freeze_authority_active,
+            top_holder_share_pct: holder_share_pct(largest_amount, parsed_mint.supply),
+            has_permanent_delegate: parsed_mint.has_permanent_delegate,
+            has_transfer_hook: parsed_mint.has_transfer_hook,
+            transfer_fee_bps: parsed_mint.transfer_fee_bps,
+        })
+    }
+
+    /// One JSON-RPC round trip over the host's `wasi:http` (via `waki`,
+    /// the blocking client that fits `execute`'s synchronous signature).
+    /// Request building and response parsing both go through
+    /// `zeroclaw_solana_core::rpc`, so the exact same logic is exercised by
+    /// its host tests; only the network call itself happens here.
+    fn rpc_call(
+        rpc_url: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let req = RpcRequest::new(method, params);
+        let body =
+            serde_json::to_value(&req).map_err(|e| format!("failed to encode rpc request: {e}"))?;
+        let resp = waki::Client::new()
+            .post(rpc_url)
+            .json(&body)
+            .connect_timeout(Duration::from_secs(10))
+            .send()
+            .map_err(|e| format!("rpc request failed: {e}"))?;
+        let resp_body: serde_json::Value = resp
+            .json()
+            .map_err(|e| format!("invalid rpc response: {e}"))?;
+        parse_response_value(resp_body).map_err(|e| e.to_string())
+    }
+
+    export!(TokenRiskCheck);
 }

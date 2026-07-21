@@ -4,11 +4,26 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "T1 ZeroClaw plugin: turns a charge request into a Solana Pay QR code."
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-zeroclaw-solana-core = { path = "../../solana-core" }
+# Vendored copy, not a path dependency reaching outside this directory --
+# see solana-core/Cargo.toml and tools/sync_solana_core.py for why. Used for
+# Pubkey::parse to validate the recipient address before building a URL; no
+# RPC calls, so no http_client permission and no waki dependency.
+zeroclaw-solana-core = { path = "solana-core" }
+wit-bindgen = "0.46"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+
+# Standalone crate: built for wasm32-wasip2, not part of any host workspace.
+[workspace]

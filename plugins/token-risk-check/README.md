@@ -62,8 +62,11 @@ Request:
 { "mint": "So11111111111111111111111111111111111111112" }
 ```
 
-Response (shape — real values come from live RPC data once the shim is
-wired up):
+Response (shape — the real component fetches `getAccountInfo` +
+`getTokenLargestAccounts` from your configured `rpc_url` and shapes this;
+this exact byte layout is unit-tested in `zeroclaw-solana-core::token`, but
+has not yet been verified against a live devnet/mainnet mint, since this
+environment has no network access):
 ```json
 {
   "mint": "So11111111111111111111111111111111111111112",
@@ -79,12 +82,19 @@ wired up):
 - [x] Pure core logic (`src/lib.rs::core`), fully host-tested
 - [x] Shared risk heuristic in `zeroclaw-solana-core::risk`
 - [x] Prompt-injection test
-- [ ] Real WIT bindings wired into the `shim` module (needs real repo access)
-- [ ] Real RPC call to fetch `MintFacts` (mint/freeze authority, holder
-      concentration, Token-2022 extensions) — currently `MintFacts` is
-      constructed by hand in tests
-- [ ] Structured logging via the logging import
-- [ ] Verified `cargo build --target wasm32-wasip2 --release`
+- [x] Real WIT bindings (`wit_bindgen::generate!` against `wit/v0`), wired
+      into `src/lib.rs::component`
+- [x] Real RPC calls (`getAccountInfo` + `getTokenLargestAccounts`) to
+      fetch `MintFacts`, via `zeroclaw-solana-core::{rpc, token}` — mint
+      account layout and Token-2022 TLV extension parsing are unit-tested
+      with hand-built byte fixtures (see `solana-core/src/token.rs`), but
+      **not yet verified against a live mint** — no network access in this
+      environment. Verify against a real Token-2022 mint (one with
+      `TransferFeeConfig`, `PermanentDelegate`, and `TransferHook`) before
+      trusting this against real funds.
+- [x] Structured logging via the logging import (`log-record`)
+- [x] Verified `cargo build --target wasm32-wasip2 --release` and
+      `cargo clippy --target wasm32-wasip2 -- -D warnings`
 
 ## What we'd build next
 
