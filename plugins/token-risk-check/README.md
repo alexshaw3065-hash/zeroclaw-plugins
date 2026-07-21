@@ -64,9 +64,9 @@ Request:
 
 Response (shape — the real component fetches `getAccountInfo` +
 `getTokenLargestAccounts` from your configured `rpc_url` and shapes this;
-this exact byte layout is unit-tested in `zeroclaw-solana-core::token`, but
-has not yet been verified against a live devnet/mainnet mint, since this
-environment has no network access):
+this exact byte layout is unit-tested in `zeroclaw-solana-core::token`, and
+has now been verified against live devnet mints too — see "Live devnet
+verification" below):
 ```json
 {
   "mint": "So11111111111111111111111111111111111111112",
@@ -87,14 +87,37 @@ environment has no network access):
 - [x] Real RPC calls (`getAccountInfo` + `getTokenLargestAccounts`) to
       fetch `MintFacts`, via `zeroclaw-solana-core::{rpc, token}` — mint
       account layout and Token-2022 TLV extension parsing are unit-tested
-      with hand-built byte fixtures (see `solana-core/src/token.rs`), but
-      **not yet verified against a live mint** — no network access in this
-      environment. Verify against a real Token-2022 mint (one with
-      `TransferFeeConfig`, `PermanentDelegate`, and `TransferHook`) before
-      trusting this against real funds.
+      with hand-built byte fixtures (see `solana-core/src/token.rs`), and
+      now also verified against live devnet mints (see "Live devnet
+      verification" below).
 - [x] Structured logging via the logging import (`log-record`)
 - [x] Verified `cargo build --target wasm32-wasip2 --release` and
       `cargo clippy --target wasm32-wasip2 -- -D warnings`
+
+## Live devnet verification
+
+Confirmed on real Solana devnet (2026-07-21) — full detail in the root
+`CLAUDE.md` "Live devnet verification log":
+- A clean mint (mint authority revoked, no freeze authority, no
+  extensions) scored **green**.
+- A Token-2022 mint created with `--enable-freeze` +
+  `--enable-permanent-delegate` scored **red**, with both reasons
+  correctly reported. This also confirmed the Token-2022 TLV byte-offset
+  parsing in `solana-core/src/token.rs` against a real mint, closing that
+  file's previously-unverified caveat.
+
+**Known limitation, found during this verification:** `getTokenLargestAccounts`
+is rate-limited on the free public devnet RPC endpoint
+(`api.devnet.solana.com`) at the method level — every call returns
+`{"code": 429, "message": "Too many requests for a specific RPC call"}`,
+regardless of caller or timing. This is not a bug in this plugin, and not
+an IP/burst limit; it appears to be a blanket restriction the public
+endpoint applies to this specific "expensive" method. Holder-concentration
+scoring (the `top_holder_share_pct` amber check) will not work against the
+free public devnet/mainnet endpoints — it requires a dedicated RPC
+provider (Helius, QuickNode, Triton, etc.) with an API key. Worth calling
+out to anyone deploying this plugin: `rpc_url` needs to point at a paid
+endpoint for full risk coverage, not just the public default.
 
 ## What we'd build next
 

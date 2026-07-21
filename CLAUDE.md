@@ -139,6 +139,68 @@ todo list, so a future session doesn't redo the discovery):
    `.json::<Value>()` pattern telegram, discord, and every other
    HTTP-calling plugin here use.
 5. ~~Install `wasm32-wasip2`.~~ Done.
+6. ~~Verify against a live devnet mint/payment.~~ Done — see "Live devnet
+   verification log" below. Both plugins' core logic now confirmed
+   against real chain data, not just mocked fixtures.
+
+## Live devnet verification log
+
+Run on 2026-07-21, against real Solana devnet (`api.devnet.solana.com`),
+using a throwaway devnet-only keypair funded by the user (not committed
+anywhere, not part of this repo). Verification was done by a small
+standalone Rust harness (outside this repo, in scratch) that calls the
+plugins' actual `core` modules directly — the same code the wasm
+component ships — wired to a plain native HTTP client instead of `waki`
+(which only exists in the wasm target). Read-only RPC calls only; no
+signing or transaction-submission code was added anywhere in this repo.
+All on-chain setup (keypair, airdrop, mint creation, the test transfer)
+was done with the standard `solana`/`spl-token` CLIs as external tooling,
+never through plugin code — the custody-tier rule (no signing key, no tx
+submission in this repo) was never touched.
+
+**Mints created:**
+- Clean mint `9e8Bacw455vQjjQqUbwJaL3J4SpRjDCaJd7MPcLHZphQ` — legacy SPL
+  Token, mint authority revoked, no freeze authority, zero supply.
+- Risky mint `AGqbQefyKdWWeUrc68ReJucwAyJQpgUXBGQaUikc9V8r` — Token-2022,
+  created with `--enable-freeze --enable-permanent-delegate`.
+
+**token-risk-check results:**
+- Clean mint → `green`, "no red flags found ...".
+- Risky mint → `red`, reasons: "a permanent delegate can move holder
+  funds without consent" + "freeze authority is still active".
+- This also verified the Token-2022 TLV byte-offset parsing in
+  `solana-core/src/token.rs` against a real live mint — that file's
+  comment flagged this as unverified before today; it's now confirmed
+  correct.
+
+**payment-watch results:**
+- Sent a real payment: 3 tokens of the risky mint, from the test wallet
+  to merchant recipient `96n4Dj5cn4PYQrEDTc1Zzjt4uY4GQ5Vshfy9VXVDHVQD`.
+  Signature: `3f96U45ge3vz9hEh3Dfn13u2zmpm9AkcfScXaAxeNsU3q7adF32UYFVJGfchX3axueBawL729hRpo3aV5bZNKnA9`.
+- `payment-watch` found the signature via `getSignaturesForAddress`,
+  parsed the correct balance delta from `getTransaction`
+  (3,000,000 raw units at 6 decimals), matched it against the expected
+  amount "3", re-screened the paying mint, and correctly fused the
+  result: `status: "paid"`, `risk_level: "red"`, summary explicitly
+  warning "Do not treat this as a safe payment." A landed payment in a
+  dangerous token still surfaced as unsafe — the fusion held up against
+  live chain data, not just mocked test fixtures.
+- Native SOL and a `reference`-correlated SPL flow were not exercised
+  live this session (only a `reference`-less SPL transfer, matched by
+  recipient token account) — worth doing before final submission.
+
+**Known limitation found:** `getTokenLargestAccounts` is rejected outright
+by the free public devnet RPC endpoint — `{"code": 429, "message": "Too
+many requests for a specific RPC call"}` on every attempt, confirmed via
+direct `curl` independent of any client library, not a per-IP burst
+limit. Two other free public endpoints tried (`rpc.ankr.com`,
+`devnet.helius-rpc.com`) both require an API key. Both plugins therefore
+degrade to 0% holder-share (not a hard failure) when this call is
+unavailable; the mint/freeze-authority and Token-2022-extension checks
+(the ones that actually decide red vs. green here) don't depend on it.
+For real holder-concentration coverage, `rpc_url` needs to point at a
+dedicated provider (Helius/QuickNode/Triton/etc.), not the public
+default — noted in both plugins' READMEs.
 
 ## Commands
 

@@ -148,14 +148,45 @@ Response once it lands in a clean token:
       paid-but-dangerous mint is flagged red)
 - [x] Wasm shim wired to real WIT bindings; builds clean for
       `wasm32-wasip2` and passes `cargo clippy -D warnings` on host + wasm
-- [ ] Verified against live chain data — this environment has no network
-      access (Solana RPC hosts are blocked by egress policy), so the RPC
-      response shapes are exercised only against mocked fixtures. Verify
-      against a real Solana Pay payment (native SOL and an SPL token, with
-      a reference) before production use.
+- [x] Verified against live chain data (2026-07-21, real devnet) — see
+      "Live devnet verification" below. Native SOL and a `reference`-based
+      SPL flow are still worth exercising before production use; only an
+      SPL transfer without a `reference` (matched by recipient token
+      account) has been tried live so far.
 - [ ] Durable-nonce / blockhash-expiry handling is **not applicable here**
       (this plugin builds no transactions — it only observes); it becomes
       relevant only if a future T1 builder is added.
+
+## Live devnet verification
+
+Confirmed on real Solana devnet (2026-07-21) — full detail in the root
+`CLAUDE.md` "Live devnet verification log". A real payment (3 tokens of a
+Token-2022 mint with `permanent-delegate` + `freeze authority` enabled)
+was sent to a merchant recipient address. `payment-watch` found the real
+signature via `getSignaturesForAddress`, parsed the correct balance delta
+from `getTransaction` (3,000,000 raw units at 6 decimals), matched it
+against the expected amount, then re-screened the paying mint and fused
+the result exactly as designed:
+
+```json
+{
+  "status": "paid",
+  "risk_level": "red",
+  "summary": "Payment landed (...) but the paying token is FLAGGED RED --
+              a permanent delegate can move holder funds without consent.
+              Do not treat this as a safe payment."
+}
+```
+
+A real, landed payment still surfaced as unsafe — the fusion held up
+against live chain data, not just mocked fixtures.
+
+**Known limitation, found during this verification:** same
+`getTokenLargestAccounts` rate-limit issue documented in
+`token-risk-check`'s README — the free public devnet RPC endpoint
+rejects that method outright (`429`, "Too many requests for a specific
+RPC call"), so holder-concentration scoring on the paying mint needs a
+dedicated RPC provider, not the public default.
 
 ## What we'd build next
 
