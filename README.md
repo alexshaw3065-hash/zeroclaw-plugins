@@ -14,9 +14,9 @@ One repo, one pull request, four pieces:
 
 | Piece | What it does | Custody tier | Status |
 |---|---|---|---|
-| `solana-core` | Shared toolbox (RPC, base58, JSON handling). Not a plugin — no wasm dependency, just a library the plugins import. | n/a | scaffolded |
-| `plugins/token-risk-check` | Given a mint address, returns a red/amber/green scam risk verdict with reasons. | **T0** — read only | scaffolded, core logic + tests written |
-| `plugins/solana-pay-request` | Turns "charge 25 USDC" into a Solana Pay QR code. | **T1** — builds a request, never signs | not yet built |
+| `solana-core` | Shared toolbox (RPC, base58, mint/Token-2022 parsing). Not a plugin — no wasm dependency; vendored into each plugin that needs it (see `tools/sync_solana_core.py`). | n/a | built |
+| `plugins/token-risk-check` | Given a mint address, returns a red/amber/green scam risk verdict with reasons. | **T0** — read only | built: real RPC fetch + WIT shim wired, `cargo test` and `cargo build --target wasm32-wasip2 --release` both clean |
+| `plugins/solana-pay-request` | Turns "charge 25 USDC" into a Solana Pay QR code. | **T1** — builds a request, never signs | built: core + WIT shim wired, `cargo test` and `cargo build --target wasm32-wasip2 --release` both clean |
 | `plugins/payment-watch` | Watches for the payment to land, then calls `token-risk-check`'s logic internally before confirming. | **T0** — read only | not yet built |
 
 Nothing in this repo ever holds a signing key. T0 = only looks. T1 = only
@@ -33,26 +33,30 @@ complete, submittable entry on its own)
    the chain over time, matching amounts, calling into the risk-check
    logic). Build this last, once the first two are solid.
 
-## Working in Claude Code
+## Building this repo
 
-This scaffold was written without live access to the ZeroClaw repo (no
-internet in the environment that generated it), so a few things need to
-happen first when you open this in Claude Code, where you do have real
-internet access:
+There is deliberately no root `Cargo.toml` — every plugin here (including
+these three) is a fully standalone crate, matching the rest of this repo.
+Run commands per-crate:
 
-1. `git clone https://github.com/zeroclaw-labs/zeroclaw-plugins` next to
-   this folder and diff `plugins/redact-text` against our layout — line up
-   folder structure, `Cargo.toml` shape, and logging calls exactly.
-2. Read the real `.wit` files under `wit/v0` in the ZeroClaw repo and
-   replace the placeholder shim functions in each plugin's `src/lib.rs`
-   with the real generated bindings — the comments marked `TODO` show
-   where.
-3. Install the wasm target: `rustup target add wasm32-wasip2`
-4. From the repo root: `cargo test` (this runs the host-side tests against
-   `solana-core` and every plugin's `core` module — no wasm toolchain
-   needed for this step, by design).
-5. Once the shim is wired to real bindings: `cargo build --target
-   wasm32-wasip2 --release`
+```bash
+rustup target add wasm32-wasip2   # once
+
+(cd solana-core && cargo test)                                       # canonical core's own tests
+(cd plugins/<name> && cargo test --locked)                           # that plugin's host tests, no network
+(cd plugins/<name> && cargo build --locked --target wasm32-wasip2 --release)  # the real component
+
+python3 tools/sync_solana_core.py check   # verify no vendored solana-core copy has drifted
+```
+
+`solana-core/` at the repo root is the single canonical source; each
+plugin that needs it carries its own literal copy under
+`plugins/<name>/solana-core/`, because the real CI
+(`tools/ci/validate_components.sh`) builds every plugin from an isolated
+snapshot of just that plugin's own folder plus `wit/v0` — a path
+dependency reaching outside a plugin's directory would not resolve
+there. Run `python3 tools/sync_solana_core.py sync` after any edit under
+`solana-core/src/` and commit the result.
 
 ## Required per plugin before submission (from the bounty's hard
 requirements — track these per plugin folder)
