@@ -29,6 +29,25 @@ pub struct MintFacts {
     pub transfer_fee_bps: u16,
 }
 
+impl MintFacts {
+    /// Assemble `MintFacts` from a parsed mint account plus the separately
+    /// fetched top-holder share. This is the single place a `ParsedMint`
+    /// (mint layout + Token-2022 extensions) is combined with holder
+    /// concentration into the facts `assess` scores — both `token-risk-check`
+    /// and `payment-watch` build facts through here, so they can never
+    /// disagree about what the same on-chain mint looks like.
+    pub fn from_parsed(parsed: &crate::token::ParsedMint, top_holder_share_pct: f64) -> Self {
+        MintFacts {
+            mint_authority_active: parsed.mint_authority_active,
+            freeze_authority_active: parsed.freeze_authority_active,
+            top_holder_share_pct,
+            has_permanent_delegate: parsed.has_permanent_delegate,
+            has_transfer_hook: parsed.has_transfer_hook,
+            transfer_fee_bps: parsed.transfer_fee_bps,
+        }
+    }
+}
+
 /// The core scam/risk heuristic. Pure function, no I/O.
 ///
 /// This is deliberately the ONE place this logic lives. Both
@@ -126,5 +145,27 @@ mod tests {
     fn reasons_are_never_empty() {
         let facts = MintFacts::default();
         assert!(!assess(&facts).reasons.is_empty());
+    }
+
+    #[test]
+    fn from_parsed_carries_every_field_through() {
+        use crate::token::ParsedMint;
+        let parsed = ParsedMint {
+            mint_authority_active: true,
+            freeze_authority_active: true,
+            supply: 1000,
+            has_permanent_delegate: true,
+            has_transfer_hook: true,
+            transfer_fee_bps: 300,
+        };
+        let facts = MintFacts::from_parsed(&parsed, 62.5);
+        assert!(facts.mint_authority_active);
+        assert!(facts.freeze_authority_active);
+        assert!(facts.has_permanent_delegate);
+        assert!(facts.has_transfer_hook);
+        assert_eq!(facts.transfer_fee_bps, 300);
+        assert_eq!(facts.top_holder_share_pct, 62.5);
+        // A mint with a permanent delegate is unambiguously red.
+        assert_eq!(assess(&facts).level, RiskLevel::Red);
     }
 }

@@ -17,7 +17,7 @@ One repo, one pull request, four pieces:
 | `solana-core` | Shared toolbox (RPC, base58, mint/Token-2022 parsing). Not a plugin — no wasm dependency; vendored into each plugin that needs it (see `tools/sync_solana_core.py`). | n/a | built |
 | `plugins/token-risk-check` | Given a mint address, returns a red/amber/green scam risk verdict with reasons. | **T0** — read only | built: real RPC fetch + WIT shim wired, `cargo test` and `cargo build --target wasm32-wasip2 --release` both clean |
 | `plugins/solana-pay-request` | Turns "charge 25 USDC" into a Solana Pay QR code. | **T1** — builds a request, never signs | built: core + WIT shim wired, `cargo test` and `cargo build --target wasm32-wasip2 --release` both clean |
-| `plugins/payment-watch` | Watches for the payment to land, then calls `token-risk-check`'s logic internally before confirming. | **T0** — read only | not yet built |
+| `plugins/payment-watch` | Watches for the payment to land, then calls `token-risk-check`'s logic internally before confirming. | **T0** — read only | built: core (match + fused `risk::assess`) + WIT shim wired, `cargo test` and `cargo build --target wasm32-wasip2 --release` both clean |
 
 Nothing in this repo ever holds a signing key. T0 = only looks. T1 = only
 prepares something for a human to sign in their own wallet.

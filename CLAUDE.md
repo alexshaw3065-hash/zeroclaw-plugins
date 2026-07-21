@@ -124,13 +124,16 @@ todo list, so a future session doesn't redo the discovery):
    `PluginCapability`; `wasm_path` is a filename resolved relative to
    the plugin directory at install time, not a `target/...` build path).
    Fixed.
-3. ~~Wire real WIT bindings.~~ Done for `token-risk-check`
+3. ~~Wire real WIT bindings.~~ Done for all three plugins
    (`wit_bindgen::generate!` against `../../wit/v0`, matching
    `redact-text`'s exact pattern — the shared top-level `wit/v0/` is
    fine to reference directly, since CI's isolated snapshot copies it
-   alongside every plugin). `solana-pay-request` and `payment-watch`
-   still need their shims written when their turn in the build order
-   comes.
+   alongside every plugin). `token-risk-check`, `solana-pay-request`,
+   and `payment-watch` all build for `wasm32-wasip2` and pass
+   `cargo clippy -D warnings` on host + wasm. Live-chain verification
+   is still pending — this session's egress policy blocks Solana RPC
+   hosts, so RPC response shapes are exercised against mocked fixtures
+   only (noted in each plugin's README).
 4. ~~Look at `plugins/telegram` for an `http_client` example.~~ Done —
    `token-risk-check`'s RPC calls use the same `waki::Client::new().post(url).json(&body).send()` /
    `.json::<Value>()` pattern telegram, discord, and every other

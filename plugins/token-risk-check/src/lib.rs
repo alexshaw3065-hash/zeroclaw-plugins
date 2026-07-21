@@ -313,14 +313,13 @@ mod component {
         let largest_amount =
             max_token_account_amount(&largest_result).map_err(|e| e.to_string())?;
 
-        Ok(MintFacts {
-            mint_authority_active: parsed_mint.mint_authority_active,
-            freeze_authority_active: parsed_mint.freeze_authority_active,
-            top_holder_share_pct: holder_share_pct(largest_amount, parsed_mint.supply),
-            has_permanent_delegate: parsed_mint.has_permanent_delegate,
-            has_transfer_hook: parsed_mint.has_transfer_hook,
-            transfer_fee_bps: parsed_mint.transfer_fee_bps,
-        })
+        // Assemble facts through the shared constructor so this plugin and
+        // payment-watch can never disagree about what the same mint looks
+        // like (see MintFacts::from_parsed in zeroclaw_solana_core::risk).
+        Ok(MintFacts::from_parsed(
+            &parsed_mint,
+            holder_share_pct(largest_amount, parsed_mint.supply),
+        ))
     }
 
     /// One JSON-RPC round trip over the host's `wasi:http` (via `waki`,
