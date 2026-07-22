@@ -202,6 +202,31 @@ For real holder-concentration coverage, `rpc_url` needs to point at a
 dedicated provider (Helius/QuickNode/Triton/etc.), not the public
 default — noted in both plugins' READMEs.
 
+## Pre-submission checklist
+
+- [x] Structured logging (`log-record` import) confirmed actually wired in
+      all three plugins' real shims, not just planned. Re-verified
+      2026-07-22 by reading each `#[cfg(target_family = "wasm")] mod
+      component` directly (not trusting the "Known gaps" log above): all
+      three (`token-risk-check`, `solana-pay-request`, `payment-watch`)
+      have real `wit_bindgen::generate!` bindings against `wit/v0` and an
+      `emit()`/`log_record(...)` call on both the success and failure
+      paths of `execute`. These are the genuine shims, not the pre-shim
+      scaffold.
+- [x] `payment-watch`'s README contains the actual prompt-injection test
+      transcript text, not just a description of the test existing.
+      Re-verified 2026-07-22: the "Prompt-injection / abuse test
+      transcript" section has the real `match_payment(...)` /
+      `confirm(...)` call-and-result transcript, not a summary.
+- [ ] Write the "what fought you on wasm32-wasip2" paragraph for the
+      final one-page write-up, per the bounty's submission requirements —
+      separate from the individual plugin READMEs.
+- [ ] ZeroClaw + Telegram integration working end to end (in progress).
+- [ ] Record the demo video (≤3 minutes).
+- [ ] Open the PR to `zeroclaw-labs/zeroclaw-plugins` as work-in-progress.
+- [ ] Track E stretch: `sns-resolve`, then `spl-transfer-build` with
+      durable nonce — only after everything above is done.
+
 ## Commands
 
 Run per-crate (there is no root workspace — see "Vendoring" above):
