@@ -194,13 +194,84 @@ by the free public devnet RPC endpoint — `{"code": 429, "message": "Too
 many requests for a specific RPC call"}` on every attempt, confirmed via
 direct `curl` independent of any client library, not a per-IP burst
 limit. Two other free public endpoints tried (`rpc.ankr.com`,
-`devnet.helius-rpc.com`) both require an API key. Both plugins therefore
-degrade to 0% holder-share (not a hard failure) when this call is
-unavailable; the mint/freeze-authority and Token-2022-extension checks
-(the ones that actually decide red vs. green here) don't depend on it.
-For real holder-concentration coverage, `rpc_url` needs to point at a
-dedicated provider (Helius/QuickNode/Triton/etc.), not the public
-default — noted in both plugins' READMEs.
+`devnet.helius-rpc.com`) both require an API key. **Correction (found
+2026-07-22 via a real manual call through the actual ZeroClaw daemon,
+see below): the 0%-holder-share graceful degradation only exists in the
+external verification harness, not in the shipped plugin code.**
+`fetch_mint_facts` in both plugins' real `#[cfg(target_family = "wasm")]`
+shim propagates this RPC error with `?` and fails the whole call closed
+— confirmed by `payment-watch` hard-failing with this exact error when
+called live through the daemon. Fine from a safety standpoint
+(fail-closed is the right default for a risk check), but the plugin
+does *not* self-heal against this specific free-endpoint restriction the
+way the harness did; only pointing `rpc_url` at a dedicated provider
+(Helius/QuickNode/Triton/etc.) actually fixes it — noted in both
+plugins' READMEs. Whether the shipped plugin should also degrade
+gracefully here (matching the harness) is an open call for later, not
+made today (no plugin code changed this session).
+
+## ZeroClaw daemon integration findings (2026-07-22)
+
+Built ZeroClaw from source (`--features plugins-wasm,plugins-wasm-cranelift`
+— the prebuilt release binary has no plugin support at all, confirmed via
+`zeroclaw plugin --help` being an unrecognized subcommand), installed all
+three plugins locally (`zeroclaw plugin install ./plugins/<name>`, after
+copying each plugin's `target/wasm32-wasip2/release/*.wasm` next to its
+`manifest.toml` — the CLI does not build the component itself), wired a
+local Ollama model (no API key needed) and a real Telegram bot, and ran
+the actual daemon end to end.
+
+**Manual / on-request calls work correctly.** Asked the agent (via a
+one-shot `zeroclaw agent -a assistant -m "..."`) to call `payment-watch`
+against the real devnet test payment from the earlier verification run.
+Even the tiny local model (`qwen2.5:0.5b`, chosen for a slow/unreliable
+sandbox network) parsed the instruction and called the tool with exactly
+the right `recipient`/`amount`/`mint` arguments, no approval prompt
+(risk-profile `auto_approve` covering the plugin tools worked as
+configured), and failed only on the already-known `getTokenLargestAccounts`
+429 above — not a new bug. Slow (~55s to first response on this
+hardware/model) but functionally correct. This is real evidence
+`payment-watch` and `token-risk-check` work as tools inside a live
+ZeroClaw agent, not just against the standalone harness.
+
+**Autonomous cron-fired notification does not work, and this traces back
+to the bounty brief itself.** Tried to build a cron SOP
+(`sops/payment-watch-poll/`) that polls `payment-watch` every 2 minutes
+and messages the Telegram owner via `send_via` the moment status flips to
+"paid" — the literal implementation of the bounty's own framing of
+`payment-watch` as "(T0, SOP-triggered) ... Fires an inbound event when it
+lands." Two layers of finding, most specific first:
+
+1. `execution_mode = "supervised"` (the SOP default) gates approval before
+   step 1 on *every* run, forever — not just a description of the SOP
+   at review time, an approval prompt each cron tick. Setting
+   `execution_mode = "auto"` in `SOP.toml` removes that gate.
+2. Even with that fixed, the run never executes. The daemon logs, every
+   single cron tick: `"ready for step 1 'Check payment' but no agent loop
+   available to execute"`. A cron-triggered SOP whose steps call tools
+   (anything other than the fixed `deterministic`-mode capability set —
+   `shell.exec`, `llm.generate`, `forge.comment`, `notify.channel`) cannot
+   self-drive in this ZeroClaw version. It genuinely needs a live
+   agent-loop turn — an actual chat message on some channel — to "catch
+   up" and advance a pending run. Sending the bot a plain "hi" is what
+   made the stuck run move at all; that's opportunistic, not autonomous.
+   There is no config fix for this: `deterministic` mode avoids needing
+   an agent loop, but its capability set can't call an arbitrary WASM
+   tool plugin, so there's no way to get both "no LLM required" and
+   "calls our plugin" in one SOP today.
+
+The deeper reason: what the bounty brief describes — something that
+watches the chain and pushes a notification into the conversation on its
+own, unprompted — is ZeroClaw's `observer` plugin capability. Per
+`docs/book/src/plugins/index.md`'s wiring-status table in the daemon repo,
+`observer` is **reserved, with no WIT world or adapter implemented yet**
+in this version. It isn't buildable by any plugin today, not just ours.
+Building `payment-watch` as a `tool` (called on request, or nudged by an
+SOP step) isn't a shortfall against the brief — given `observer` doesn't
+exist yet, it's the closest correct implementation actually possible
+against the real ZeroClaw runtime. State this plainly, with this evidence,
+in the final write-up rather than glossing over it or claiming the cron
+demo works when it doesn't.
 
 ## Pre-submission checklist
 
@@ -221,7 +292,13 @@ default — noted in both plugins' READMEs.
 - [ ] Write the "what fought you on wasm32-wasip2" paragraph for the
       final one-page write-up, per the bounty's submission requirements —
       separate from the individual plugin READMEs.
-- [ ] ZeroClaw + Telegram integration working end to end (in progress).
+- [x] ZeroClaw + Telegram integration — the manual/on-request path works
+      end to end (verified 2026-07-22, see "ZeroClaw daemon integration
+      findings"): real daemon, real Telegram bot, agent correctly calls
+      `payment-watch`/`token-risk-check`. The cron-autonomous "fires on
+      its own" path does **not** work in this ZeroClaw version (platform
+      gap, not a plugin bug) — write that up honestly rather than
+      re-attempt it.
 - [ ] Record the demo video (≤3 minutes).
 - [ ] Open the PR to `zeroclaw-labs/zeroclaw-plugins` as work-in-progress.
 - [ ] Track E stretch: `sns-resolve`, then `spl-transfer-build` with
