@@ -11,13 +11,20 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Vendored copy, not a path dependency reaching outside this directory --
-# see solana-core/Cargo.toml and tools/sync_solana_core.py for why. Used for
-# Pubkey::parse to validate the recipient address before building a URL; no
-# RPC calls, so no http_client permission and no waki dependency.
+# see solana-core/Cargo.toml and tools/sync_solana_core.py for why. Used
+# for Pubkey::parse to validate the recipient address before building a
+# URL; building the URL itself is still pure string formatting.
 zeroclaw-solana-core = { path = "solana-core" }
 wit-bindgen = "0.46"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# wasi:http client -- only compiled for the wasm component, never on the
+# host, so `cargo test` never tries to build it. Used only to
+# opportunistically upgrade the operator's static `brl_rate` to a live
+# one (Jupiter + Frankfurter); never for the Solana Pay URL itself.
+[target.'cfg(target_family = "wasm")'.dependencies]
+waki = { version = "0.5.1", features = ["json"] }
 
 [profile.release]
 opt-level = "s"

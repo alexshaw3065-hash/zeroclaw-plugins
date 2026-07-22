@@ -72,6 +72,11 @@ pub mod core {
         /// One short human-readable sentence for the chat channel. Kept
         /// deliberately compact (bounty trap #3: never dump raw RPC JSON).
         pub summary: String,
+        /// "R$<amount * brl_rate>" for a confirmed payment, present only
+        /// when the operator has configured a `brl_rate` -- the root
+        /// README's "Brazil touch." Always `None` on a "pending" result;
+        /// a not-yet-landed payment has nothing confirmed to convert.
+        pub brl_estimate: Option<String>,
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -284,7 +289,17 @@ pub mod core {
     /// The shim fetches `MintFacts` for an SPL mint (or passes
     /// `MintFacts::default()` for native SOL, which `assess` scores green --
     /// native SOL has no mint/freeze authority, delegate, hook, or fee).
-    pub fn confirm(args: &Args, matched: &ObservedTransfer, facts: &MintFacts) -> Output {
+    ///
+    /// `brl_rate` is BRL per one unit of `args.amount`'s asset, read from
+    /// config by the shim (`None` when unset) -- see `format_brl` for why
+    /// this is parsed as `f64` even though `args.amount` deliberately
+    /// never is.
+    pub fn confirm(
+        args: &Args,
+        matched: &ObservedTransfer,
+        facts: &MintFacts,
+        brl_rate: Option<f64>,
+    ) -> Output {
         let report: RiskReport = assess(facts);
         let level = format!("{:?}", report.level).to_lowercase();
         let sig_short = short_sig(&matched.signature);
@@ -315,6 +330,7 @@ pub mod core {
             risk_level: Some(level),
             risk_reasons: report.reasons,
             summary,
+            brl_estimate: brl_rate.and_then(|rate| format_brl(&args.amount, rate)),
         }
     }
 
@@ -332,6 +348,7 @@ pub mod core {
             risk_level: None,
             risk_reasons: Vec::new(),
             summary: format!("No matching payment yet ({asset} to {}).", short_addr(&args.recipient)),
+            brl_estimate: None,
         }
     }
 
@@ -345,6 +362,19 @@ pub mod core {
             return s.to_string();
         }
         format!("{}…{}", &s[..4], &s[s.len() - 4..])
+    }
+
+    /// "R$<amount * rate>", formatted to 2 decimal places. `None` on a
+    /// non-finite rate/amount rather than a nonsense figure -- display
+    /// only, so failing silently by omitting the estimate is the right
+    /// default, never something that should block a real confirmation.
+    fn format_brl(amount: &str, rate: f64) -> Option<String> {
+        let amount: f64 = amount.parse().ok()?;
+        let brl = amount * rate;
+        if !brl.is_finite() {
+            return None;
+        }
+        Some(format!("R${brl:.2}"))
     }
 
     #[cfg(test)]
@@ -517,10 +547,11 @@ pub mod core {
         fn confirm_screens_a_clean_mint_green() {
             let observed = spl_transfer(25_000_000);
             let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
-            let out = confirm(&args_for("25", Some(USDC)), &observed, &facts);
+            let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, None);
             assert_eq!(out.status, "paid");
             assert_eq!(out.risk_level.as_deref(), Some("green"));
             assert!(out.summary.contains("confirmed"));
+            assert!(out.brl_estimate.is_none());
         }
 
         /// The safety-critical case: a payment lands, but in a token with a
@@ -531,11 +562,27 @@ pub mod core {
         fn confirm_flags_a_paid_but_dangerous_mint_red() {
             let observed = spl_transfer(25_000_000);
             let facts = MintFacts { has_permanent_delegate: true, ..Default::default() };
-            let out = confirm(&args_for("25", Some(USDC)), &observed, &facts);
+            let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, None);
             assert_eq!(out.status, "paid");
             assert_eq!(out.risk_level.as_deref(), Some("red"));
             assert!(out.summary.contains("FLAGGED"));
             assert!(!out.summary.to_lowercase().contains("confirmed: "));
+        }
+
+        #[test]
+        fn confirm_includes_brl_estimate_when_rate_configured() {
+            let observed = spl_transfer(25_000_000);
+            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, Some(5.60));
+            assert_eq!(out.brl_estimate.as_deref(), Some("R$140.00"));
+        }
+
+        #[test]
+        fn pending_never_carries_a_brl_estimate() {
+            // Nothing has landed yet -- there is no confirmed amount to
+            // convert, regardless of whether a rate is configured.
+            let out = pending(&args_for("25", Some(USDC)));
+            assert!(out.brl_estimate.is_none());
         }
 
         /// Prompt-injection / abuse: nothing in the args (a crafted amount,
@@ -592,6 +639,11 @@ mod component {
     /// Cap on candidate transactions inspected per call -- bounds both RPC
     /// work and context size.
     const MAX_SIGNATURES: usize = 10;
+    /// The wrapped-SOL mint address, used as the price-lookup id for a
+    /// native-SOL payment (Jupiter's price API is SPL-mint-keyed; this is
+    /// the standard convention Solana tooling uses to price native SOL
+    /// through an SPL-token-shaped price API).
+    const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 
     #[derive(serde::Deserialize)]
     struct ExecuteArgs {
@@ -626,7 +678,10 @@ mod component {
              mint), correlated by a Solana Pay reference. When a matching \
              transfer is found, it automatically screens the paying token for \
              scam risk before confirming. Read-only, never moves funds. Call \
-             it on a schedule (e.g. an SOP cron) to poll until paid."
+             it on a schedule (e.g. an SOP cron) to poll until paid. If \
+             `brl_estimate` is present on a \"paid\" result, show it alongside \
+             `amount` -- omit it entirely on \"pending\" or when absent, never \
+             invent a figure yourself."
                 .to_string()
         }
 
@@ -689,7 +744,19 @@ mod component {
                 reference: parsed.reference.clone(),
             };
 
-            let output = match run_check(&rpc_url, &core_args) {
+            // A configured `brl_rate` is both the opt-in signal for this
+            // whole feature and the fallback figure -- absent/empty/
+            // unparseable all mean "no BRL estimate," ever a hard
+            // failure. `run_check` resolves live-vs-static once it knows
+            // which mint actually paid (a "pending" result never reaches
+            // that point, so never attempts a live fetch for nothing).
+            let static_rate = parsed
+                .config
+                .get("brl_rate")
+                .filter(|v| !v.is_empty())
+                .and_then(|v| v.parse::<f64>().ok());
+
+            let output = match run_check(&rpc_url, &core_args, static_rate) {
                 Ok(o) => o,
                 Err(e) => {
                     emit(PluginAction::Fail, PluginOutcome::Failure, "rpc/check failed");
@@ -716,7 +783,7 @@ mod component {
     /// on a match -- fetch the paying mint's facts and hand off to
     /// `core::confirm` (which runs the risk screening). No matching or risk
     /// logic lives here.
-    fn run_check(rpc_url: &str, args: &Args) -> Result<core::Output, String> {
+    fn run_check(rpc_url: &str, args: &Args, static_rate: Option<f64>) -> Result<core::Output, String> {
         // Correlate by the reference when given (Solana Pay attaches it as a
         // key precisely so the payment is findable this way); otherwise fall
         // back to the recipient's own address (works for native SOL).
@@ -748,7 +815,14 @@ mod component {
                     // Native SOL has no mint -- default facts score green.
                     None => MintFacts::default(),
                 };
-                Ok(core::confirm(args, transfer, &facts))
+                // Live pricing needs the actual paying mint, which is only
+                // known now, at a match -- a "pending" result below never
+                // reaches here, so never attempts a live fetch for nothing.
+                let brl_rate = static_rate.map(|fallback| {
+                    let asset_mint = transfer.mint.as_deref().unwrap_or(WSOL_MINT);
+                    resolve_brl_rate(asset_mint, fallback)
+                });
+                Ok(core::confirm(args, transfer, &facts, brl_rate))
             }
             None => Ok(core::pending(args)),
         }
@@ -805,6 +879,81 @@ mod component {
                 message: message.to_string(),
             },
         );
+    }
+
+    /// BRL-per-unit for `asset_mint`: live (Jupiter USD price x Frankfurter
+    /// USD->BRL rate) when both succeed, `fallback` (the operator's
+    /// configured static `brl_rate`) on any failure -- a rate-limited or
+    /// unreachable price API degrades this display-only figure to the
+    /// operator's own number, never to an error that blocks the actual
+    /// payment confirmation.
+    fn resolve_brl_rate(asset_mint: &str, fallback: f64) -> f64 {
+        match fetch_live_brl_rate(asset_mint) {
+            Some(rate) => {
+                emit(PluginAction::Note, PluginOutcome::Success, &format!("live brl rate used: {rate}"));
+                rate
+            }
+            None => {
+                emit(PluginAction::Note, PluginOutcome::Failure, "live brl rate unavailable, using static fallback");
+                fallback
+            }
+        }
+    }
+
+    fn fetch_live_brl_rate(asset_mint: &str) -> Option<f64> {
+        let usd_price = match fetch_jupiter_usd_price(asset_mint) {
+            Ok(p) => p,
+            Err(e) => {
+                emit(PluginAction::Note, PluginOutcome::Failure, &format!("jupiter price fetch failed: {e}"));
+                return None;
+            }
+        };
+        let usd_to_brl = match fetch_usd_to_brl_rate() {
+            Ok(r) => r,
+            Err(e) => {
+                emit(PluginAction::Note, PluginOutcome::Failure, &format!("frankfurter fx fetch failed: {e}"));
+                return None;
+            }
+        };
+        let rate = usd_price * usd_to_brl;
+        rate.is_finite().then_some(rate)
+    }
+
+    /// Free, no-API-key endpoint (confirmed live: returns a real USD price
+    /// for a known mint, and an empty object -- not an error -- for a mint
+    /// with no market). Rate-limited fairly tight without a registered
+    /// key, which is exactly why this is a best-effort upgrade, not a
+    /// requirement.
+    fn fetch_jupiter_usd_price(mint: &str) -> Result<f64, String> {
+        let url = format!("https://api.jup.ag/price/v3?ids={mint}");
+        let resp = waki::Client::new()
+            .get(&url)
+            .connect_timeout(Duration::from_secs(5))
+            .send()
+            .map_err(|e| format!("request failed: {e}"))?;
+        let body: Value = resp.json().map_err(|e| format!("invalid json: {e}"))?;
+        body.get(mint)
+            .and_then(|v| v.get("usdPrice"))
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| format!("no usdPrice for {mint} in response: {body}"))
+    }
+
+    /// Free, no-API-key, ECB-sourced daily rate, confirmed live. Note the
+    /// `.dev` domain: `frankfurter.app` 301-redirects here permanently,
+    /// and `waki` does not follow redirects, so the old `.app` URL parsed
+    /// as invalid JSON (the redirect body, not real data) -- this is the
+    /// one that actually works.
+    fn fetch_usd_to_brl_rate() -> Result<f64, String> {
+        let resp = waki::Client::new()
+            .get("https://api.frankfurter.dev/v1/latest?from=USD&to=BRL")
+            .connect_timeout(Duration::from_secs(5))
+            .send()
+            .map_err(|e| format!("request failed: {e}"))?;
+        let body: Value = resp.json().map_err(|e| format!("invalid json: {e}"))?;
+        body.get("rates")
+            .and_then(|v| v.get("BRL"))
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| format!("no BRL rate in response: {body}"))
     }
 
     export!(PaymentWatch);

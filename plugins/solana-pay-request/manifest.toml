@@ -2,7 +2,10 @@ name = "solana-pay-request"
 version = "0.1.0"
 wasm_path = "solana_pay_request.wasm"
 capabilities = ["tool"]
-# No permissions needed yet -- building a Solana Pay URL is pure string
-# formatting. Add "config_read" only if a default recipient address ends
-# up living in plugin config.
-permissions = []
+# config_read: for the optional `brl_rate` display setting (the root
+# README's "Brazil touch"). http_client: to opportunistically upgrade
+# that setting to a live price (Jupiter + Frankfurter) when the operator
+# has opted in by setting `brl_rate` at all -- falls back to their static
+# rate on any failure, never a hard requirement. Building the actual
+# Solana Pay URL itself is still pure string formatting either way.
+permissions = ["config_read", "http_client"]

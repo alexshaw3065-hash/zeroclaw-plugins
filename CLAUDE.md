@@ -303,6 +303,113 @@ demo works when it doesn't.
 - [ ] Open the PR to `zeroclaw-labs/zeroclaw-plugins` as work-in-progress.
 - [ ] Track E stretch: `sns-resolve`, then `spl-transfer-build` with
       durable nonce — only after everything above is done.
+- [ ] **Next thing to tackle:** make `payment-watch` actually notice a
+      landed payment on its own, unprompted — not just answer correctly
+      *when asked*. Confirmed 2026-07-22: today's live testing only
+      proves the latter (ask "check on this payment" -> correct answer,
+      same interaction shape as any other request). It does not
+      spontaneously announce a payment the way the bounty's original
+      "fires an inbound event" framing implies. This is the same root
+      gap as the cron/SOP finding above (a headless trigger needs a live
+      agent-loop turn to execute, so it can't self-fire) and the missing
+      `observer` plugin capability. Solving this for real -- not just
+      writing around it -- is the next real step, once the checklist
+      items above are done.
+
+## 2026-07-22 addendum: QR code output + a real redaction bug fix
+
+- `solana-pay-request` now also returns `qr_url`: a QR-code image of the
+  same pay URL, built via the free, no-auth goQR.me API
+  (api.qrserver.com; confirmed via their own docs -- no request limit,
+  no attribution required, they state they don't log QR contents).
+  Still pure string formatting, no new permission, no plugin-side
+  network call -- the plugin only builds the URL string. The wasm shim's
+  tool description now tells the agent to include
+  `[IMAGE:<qr_url>]` in its reply, which ZeroClaw's Telegram channel
+  recognizes as a real outbound photo-attachment marker (confirmed
+  working live: an actual scannable QR image arrived in Telegram, not
+  just a link). Tests updated (`qr_url_embeds_the_percent_encoded_pay_url`).
+- **Real bugs found and fixed (ZeroClaw daemon config, not our plugin) --
+  two separate, independent checks, both false-positiving on legitimate
+  Solana data:**
+  1. `security.leak_detection`'s high-entropy-token heuristic was
+     redacting every Solana address as `[REDACTED_HIGH_ENTROPY_TOKEN]`
+     -- base58 addresses and API keys look identical to a pure
+     Shannon-entropy check. Fixed with
+     `security.leak_detection.high_entropy_tokens = false`.
+  2. Even after that fix, `&spl-token=<mint>` still came back as
+     `&spl-[REDACTED_SECRET]`. Separate cause: `check_generic_secrets`'s
+     regex `(?i)token[=:]\s*['"]*[a-zA-Z0-9_.-]{20,}` has no word-boundary
+     anchor, so it matches the literal substring "token=" inside
+     "spl-**token**=", indistinguishable from a real `access_token=...`
+     leak. This check is the only one in the whole leak-detector gated by
+     `sensitivity > 0.5` (default 0.7); every other real check --
+     API keys, AWS credentials, JWTs, private keys -- is unconditional.
+     Fixed with `security.leak_detection.sensitivity = 0.5`, which
+     disables just this one overly-broad check and leaves the rest
+     active.
+  Both confirmed fixed via a live Telegram reply showing the complete,
+  unredacted pay URL. Worth a line in the write-up either way: anyone
+  deploying this against a real payment terminal needs both of these
+  same two config changes, or addresses and mint parameters come back
+  redacted and the pay URL is unusable.
+- **Tried and reverted:** a markdown hyperlink (`[Tap to pay](solana:...)`)
+  for the pay URL, hoping Telegram would render it as clickable text.
+  Confirmed via live Telegram test that it does not -- Telegram parsed
+  the surrounding code-fence backticks fine but rendered the link syntax
+  as literal unparsed text instead of a clickable link. `solana:` isn't a
+  scheme Telegram treats as linkable, even via explicit markdown link
+  syntax, not just plain-text auto-linking. Reverted the tool's
+  description to stop instructing this and to show `url` only once (a
+  single code block for copy/paste) -- the QR image (`[IMAGE:<qr_url>]`)
+  is the one reliable one-tap path, since a wallet's camera scan bypasses
+  the link-scheme problem entirely.
+
+## 2026-07-22 addendum: the BRL touch, hybrid live/static
+
+Both `solana-pay-request` and `payment-watch` now implement the root
+README's "Brazil touch": a `brl_estimate` display field alongside the
+crypto amount. Design, chosen deliberately over either extreme:
+
+- A configured `brl_rate` (decimal string, BRL per unit of the asset) is
+  both the operator's opt-in signal for this whole feature and the
+  fallback figure. Omit it entirely and there are zero extra network
+  calls and no `brl_estimate` field at all -- unchanged from the
+  static-only version.
+- When it's set, a live rate is tried first: [Jupiter's price
+  API](https://api.jup.ag/price/v3?ids=<mint>) (free, no API key,
+  confirmed live -- real USD price for a known mint, empty `{}` --not an
+  error-- for a mint with no market, e.g. our own test mints) times
+  [Frankfurter's](https://api.frankfurter.dev/v1/latest?from=USD&to=BRL)
+  free daily USD->BRL rate. Any failure (unreachable, rate-limited, no
+  price data) falls back to the operator's static `brl_rate` silently --
+  never a hard error, since this is a display-only nicety that must never
+  block the actual payment request/confirmation.
+- `core::run`/`core::confirm` are completely unchanged by this -- both
+  already just took a single resolved `Option<f64>` rate, so the
+  live-vs-static decision lives entirely in each wasm shim, mirroring
+  where `token-risk-check` fetches `MintFacts` before calling its own
+  pure core.
+- New permission: `solana-pay-request` now has `http_client`, used
+  *only* for this opportunistic price upgrade -- building the Solana Pay
+  URL itself is still pure string formatting and touches no network.
+  `payment-watch` already had `http_client` for its RPC calls.
+
+**Real bug found and fixed:** `frankfurter.app` (the URL used in the
+first working version) 301-redirects permanently to
+`frankfurter.dev/v1/latest` -- confirmed via `curl -I`. `waki` does not
+follow redirects, so every live-rate attempt silently failed with
+"invalid json: expected value at line 1 column 1" (the redirect's HTML
+body, not real data), falling back to the static rate every time without
+ever surfacing an error. Only caught because the resulting figure
+(R$140.00) exactly matched the static-rate math and didn't match a
+manually computed live estimate (~R$127) -- a coincidentally "working
+right" static fallback almost hid a completely broken live path. Fixed
+by pointing directly at the post-redirect `.dev` URL. Confirmed
+genuinely live afterward via an explicit diagnostic log line
+(`live brl rate used: 5.0783...`, matching Jupiter's real-time USDC
+price times Frankfurter's real daily rate) -- not just a plausible-looking
+number.
 
 ## Commands
 

@@ -11,8 +11,11 @@ a ZeroClaw SOP cron) to poll until paid.
 
 Reads public chain data only — `getSignaturesForAddress`, `getTransaction`,
 and (to screen the paying mint) `getAccountInfo` /
-`getTokenLargestAccounts`. Never builds, signs, or submits a transaction.
-Secrets held: an RPC endpoint URL via `config_read`, nothing else.
+`getTokenLargestAccounts`. When `brl_rate` is configured, also reads two
+free public price APIs (Jupiter, Frankfurter) to opportunistically
+upgrade that setting to a live rate — see "Config keys" below. Never
+builds, signs, or submits a transaction. Secrets held: an RPC endpoint URL
+via `config_read`, nothing else.
 
 **Why T0 is the right tier:** confirming a payment is an observation, not
 an action. There is no path in this plugin that moves funds, so the worst
@@ -41,6 +44,7 @@ on-chain mint looks like.
 | Key | Required | Description |
 |---|---|---|
 | `rpc_url` | yes | Your Solana RPC endpoint. No key is hardcoded — bring your own. |
+| `brl_rate` | no | BRL per one unit of whatever asset is expected (a decimal string, e.g. `"5.60"`). Setting this opts into the "Brazil touch": a confirmed ("paid") result carries a `brl_estimate` display string. A "pending" result never carries one, regardless of this setting — nothing confirmed yet to convert. This value is both the opt-in signal and the fallback figure: on a match, a live rate is tried first (Jupiter's price API on the actual paying mint, times Frankfurter's daily USD→BRL rate), falling back to this static value on any failure — matches `solana-pay-request`'s identical setting. |
 
 ## Parameters
 
@@ -122,7 +126,7 @@ Response while waiting:
   "risk_reasons": [], "summary": "No matching payment yet (25 of EPjF…Dt1v to 9xQe…VFin)." }
 ```
 
-Response once it lands in a clean token:
+Response once it lands in a clean token (with `brl_rate = "5.60"` set):
 ```json
 {
   "status": "paid",
@@ -131,9 +135,12 @@ Response once it lands in a clean token:
   "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
   "risk_level": "green",
   "risk_reasons": ["no red flags found in mint/freeze authority, holder concentration, or Token-2022 extensions"],
-  "summary": "Payment confirmed: 25 of EPjF…Dt1v received (sig 5xY…9kR). Paying token risk: GREEN."
+  "summary": "Payment confirmed: 25 of EPjF…Dt1v received (sig 5xY…9kR). Paying token risk: GREEN.",
+  "brl_estimate": "R$140.00"
 }
 ```
+`brl_estimate` is absent entirely without `brl_rate` configured, and never
+appears on a "pending" result — there is nothing confirmed yet to convert.
 
 ## What's built vs. what's left
 
@@ -153,6 +160,12 @@ Response once it lands in a clean token:
       SPL flow are still worth exercising before production use; only an
       SPL transfer without a `reference` (matched by recipient token
       account) has been tried live so far.
+- [x] BRL-equivalent display on a confirmed payment (`brl_estimate`, via
+      an operator-configured `brl_rate` — root README's Brazil touch).
+      Hybrid: live price (Jupiter + Frankfurter, both free, no API key)
+      on the actual paying mint when available, falls back to the
+      operator's static `brl_rate` on any failure; never appears on a
+      "pending" result.
 - [ ] Durable-nonce / blockhash-expiry handling is **not applicable here**
       (this plugin builds no transactions — it only observes); it becomes
       relevant only if a future T1 builder is added.
