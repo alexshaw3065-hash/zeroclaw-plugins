@@ -26,13 +26,157 @@ instruction, not a preference.
   bounded computation, not a thin wrapper. `solana-pay-request` is
   honestly closer to something a Tier 1 Skill could do — say so
   explicitly rather than pretend otherwise; owning this is itself good
-  craft.
+  craft. **Important nuance (found 2026-07-23 reading the actual brief,
+  see below): the sponsors' own reference "winning showcase" is itself
+  built at Tier 1 — stock binary, one payment *skill*, one cron SOP. Our
+  entire payment-request/QR piece is heavier (a compiled plugin) than
+  their own reference architecture for the identical use case. Own this
+  explicitly in the write-up; don't imply our approach was necessary
+  when their own example proves it wasn't, for that piece.**
 - Frontier ideas from the new doc (agent-hires-agent/escrow, sub-agents,
   x402 marketplaces, on-chain skill distribution, policy wallets,
   transaction firewalls) are noted and deliberately **not pursued** —
   wrong risk/time tradeoff against a proven, nearly-finished submission.
   This is a considered decision, not an oversight — do not revisit
   without a major runway change.
+
+## The official bounty brief — key facts (read 2026-07-23)
+
+Source: the actual Superteam Earn listing text, pasted in full by the
+user. This is the primary source; treat anything else in this file that
+conflicts with it as secondary. Full original text is in the
+conversation this was captured from, not reproduced verbatim here —
+what follows is the load-bearing extract.
+
+**Rewards:** 🥇 1,800 USDG · 🥈 1,200 USDG · 🥉 1,000 USDG · 4×
+Honorable mention, 250 USDG each. Total pool 5,000 USDG.
+
+**Judging weights** (know these — they say what to spend polish time
+on): Use case 30% · Safety & custody design 25% · Craft 20% ·
+Reproducibility 15% · Showcase 10%. Tiebreak: build-in-public logs on X
+during the bounty (**not currently being done — consider starting if
+there's runway for it**).
+
+**Submission mechanics, precise:**
+- A *working* use case: real agent, real channel, real job, actually
+  running (not a concept). Link to the GitHub repo.
+- A showcase post in `#solana-bounty` on Discord: video (≤3 min, real
+  agent + real channel, no slides — "terminal + phone is perfect"),
+  write-up (what it does, who it's for, which ZeroClaw features it
+  uses, what was built, custody tier + threat model, links to
+  config/SOPs/skills/code, secrets redacted), plus any supporting
+  material.
+- Standalone plugin PRs are explicitly **not** accepted as submissions
+  on their own. Registry merges happen *separately*, after judging —
+  maintainers invite the strongest implementation per plugin family.
+  Confirms (with more precision) the RULE CHANGE above.
+- Reproducibility is scored directly: "another operator replicates your
+  setup from your write-up in an evening" is the literal bar.
+
+**The sponsors' own reference "winning showcase" (read this closely —
+it's the actual bar, and it's Tier 1, not Tier 3):**
+> Someone DMs the shop's **WhatsApp** (not Telegram): "charge table 4,
+> 25 USDC." Agent replies with a QR. Customer wallet pays it. **Forty
+> seconds later** the agent posts "Invoice #412 paid ✓" in the owner's
+> channel **on its own**. Write-up: *stock release binary*, webhook +
+> WhatsApp channel, **one payment skill** (Solana Pay URL construction +
+> response shaping — not a compiled plugin), **one cron SOP** polling
+> `getSignaturesForAddress`, one approval checkpoint for refunds. T1, no
+> keys held.
+
+Two things this directly changes about how we should think about our
+own submission:
+1. Their reference build is entirely **Tier 1** for the payment-terminal
+   piece — a skill plus a cron SOP, zero compiled code. Ours does the
+   same job with a compiled `solana-pay-request` plugin. Not wrong (the
+   brief explicitly scores "correct layering," and over-building isn't
+   disqualifying) but it means our tier defense for that specific plugin
+   has to be an honest "this could have been a skill" admission, not a
+   claim of necessity — already captured above, now with the primary
+   source to cite directly in the write-up.
+2. **Sharper point:** their own reference architecture is *also* "one
+   cron SOP" driving a tool call to post an unprompted result 40 seconds
+   later. That is exactly the mechanism we spent real effort verifying
+   is currently broken in ZeroClaw (`THE ROADMAP` step 1, re-confirmed
+   2026-07-23: a cron-triggered SOP whose step calls a tool cannot
+   self-execute without a live agent-loop turn already in progress —
+   "no agent loop available to execute," reproduced cleanly across 6
+   real cron ticks with zero chat interaction). If that's a genuine
+   platform-wide limitation and not something specific to our setup, the
+   sponsors' own literal reference example would hit the identical wall
+   today. This is worth stating plainly and precisely in the write-up —
+   not as an excuse, as a real, evidenced finding about the platform
+   itself, which is exactly the kind of thing "Craft" (20%) and honest
+   "Safety & custody" framing (25%) are supposed to reward. Don't
+   overclaim this (we have not tested their exact skill+cron+webhook
+   architecture, only our own plugin+cron architecture) — but the
+   underlying SOP-execution mechanism we found broken is shared, not
+   plugin-specific, per our own earlier finding
+   ("ZeroClaw daemon integration findings" below).
+
+**Tier 3 guidance on wasm32-wasip2 — the exact source text for
+`THE ROADMAP` step 4's rewrite (quote this closely, don't paraphrase
+from stale memory):**
+> The modular `solana-pubkey` / `solana-instruction` / `solana-message` /
+> `solana-transaction` / `solana-hash` crates, plus `borsh` and `bs58`,
+> all compile clean to `wasm32-wasip2` on the stock toolchain — no
+> hand-rolled byte encoding needed to build and serialize transactions.
+> Even `solana-sdk` itself compiles for wasip2 now; prefer the modular
+> crates for a minimal component. Two caveats: this is compile-verified
+> as a library, not yet exercised as an instantiated component inside
+> the ZeroClaw host, whose WASI capability grants are narrower — budget
+> for surprises at the component boundary, and write down what you hit.
+> The browser-targeted crates (`wasm_client_solana`,
+> `solana-client-wasm`) still won't work (JavaScript glue). Transport is
+> unchanged either way: RPC goes over `waki` (blocking `wasi:http`) +
+> `serde_json`, not `solana-client`.
+
+This means the old framing in our own README/CLAUDE.md ("stay on `waki`
++ `serde_json` + `bs58` + hand-rolled encoding, not the official Solana
+Rust SDK," in "Traps called out by the bounty sponsors" below) is
+**half-stale**: `waki`/`serde_json` for transport still holds, but "no
+official SDK at all" is now outdated guidance — the *modular* crates
+work fine as libraries. We never actually needed them (none of our
+three plugins build a raw transaction), so nothing to change in the
+plugins themselves, but the write-up's wasm32-wasip2 paragraph (step 4)
+needs to describe this accurately, not repeat the old blanket avoidance
+framing as if it still fully holds.
+
+**New/refined traps not already captured below:**
+- `wit/v0` is explicitly experimental, no `.frozen` marker — the ABI can
+  move; pin assumptions, expect a rebuild. (Already implicitly true for
+  us; now explicit.)
+- Pyth Core deprecates **2026-07-31** (mid-bounty) — unauthenticated
+  Hermes endpoints stop serving. Not currently relevant (we use Jupiter
+  + Frankfurter for BRL, not Pyth) — but if price-feed work ever touches
+  Pyth, get an API key first or fall back to Switchboard's Crossbar.
+- **Design for polling, not webhooks**: a chat-resident cron agent has
+  no guaranteed public inbound ingress — validates `payment-watch`'s
+  existing poll-based design. Where hand-building a transaction is the
+  hard part, the brief suggests routing through a **Blink** instead
+  (Actions/Jupiter/Drift Gateway/Kamino hand back a ready-to-sign base64
+  transaction over plain REST) — worth considering for `THE ROADMAP`
+  step 9's `spl-transfer-build` stretch goal as a lower-effort
+  alternative to hand-rolling the transaction ourselves, if a suitable
+  Action/Blink provider exists for a plain SPL transfer.
+
+**"We will not accept" — self-check against this list before submitting:**
+concepts/mockups (must run — we're clear, everything's live-tested);
+"a plugin with no use case around it" (we're clear — one coherent
+payment-terminal use case, not three disconnected components); "thin
+single-RPC-call wrappers padded into WASM" (worth re-reading with a
+critical eye against `solana-pay-request` specifically — see the tier
+defense note above); anything holding a raw private key with no
+caps/allowlist/approval gate (we're clear — T0/T1 only, no plugin in
+this repo ever holds a key); trading/sniper/"buy this token" bots (not
+applicable).
+
+**Resource noted, unvetted:** a bounty commenter linked a third-party
+crate, `solana-client-wasip2` (crates.io), claiming wasm32-wasip2
+Solana-client support. Not evaluated or trusted yet — if `THE ROADMAP`
+step 9 (`spl-transfer-build`) is reached, vet this before depending on
+it; a random comment-linked crate is not itself a source of truth about
+safety or correctness.
 
 ## What this is
 
@@ -486,12 +630,25 @@ Run per-crate (there is no root workspace — see "Vendoring" above):
   go stale before a human signs it. Relevant once `payment-watch` /
   `solana-pay-request` build real transactions — durable nonce accounts
   are the fix, not yet implemented.
-- **solana-sdk / solana-client don't work well for wasm32-wasip2.** Stay
-  on `waki` + `serde_json` + `bs58` + hand-rolled encoding, not the
-  official Solana Rust SDK.
+- **Transport stays on `waki` + `serde_json`, never `solana-client`** (its
+  transport layer needs real sockets, which plugins don't have). This
+  still fully holds. **Corrected 2026-07-23** (was: "solana-sdk /
+  solana-client don't work well for wasm32-wasip2... not the official
+  Solana Rust SDK" — outdated per the actual bounty brief's verified-by-
+  build Tier 3 guidance): the *modular* solana crates (`solana-pubkey`,
+  `solana-instruction`, `solana-message`, `solana-transaction`,
+  `solana-hash`) plus `borsh`/`bs58` compile clean to `wasm32-wasip2` as
+  libraries — even `solana-sdk` itself compiles for wasip2 now. Prefer
+  the modular crates over hand-rolled byte encoding *if* a future plugin
+  needs to build a real transaction (durable-nonce work, stretch goal 9).
+  Not yet exercised as an instantiated component inside the ZeroClaw
+  host specifically — budget for surprises at that boundary. Full
+  verbatim guidance: "The official bounty brief — key facts" above.
 - **Don't flood the context window.** Every plugin response must be
   short, shaped text (aim ~200 tokens), never raw RPC JSON dumps.
 - **RPC key/URL only via config, never hardcoded.**
+- **`wit/v0` is experimental, no `.frozen` marker** — the ABI can move;
+  pin assumptions, expect a rebuild.
 
 ## Where the fuller story lives
 
