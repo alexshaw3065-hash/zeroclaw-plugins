@@ -4,13 +4,43 @@ Read this fully before doing anything. This file is the persistent memory
 for this project — treat conflicting assumptions from earlier in a
 session as wrong if they contradict this file.
 
+## RULE CHANGE — CONFIRMED
+
+The bounty rules changed. Submission is now a showcase post in
+**#solana-bounty on Discord**: a ≤3min video + a written report + a
+linked repo. **Not a pull request.** Do not open a registry PR against
+`zeroclaw-labs/zeroclaw-plugins` during the bounty — explicit sponsor
+instruction, not a preference.
+
+**Strategy, locked in:**
+- The existing use case (payment terminal, fused safety check) already
+  matches the sponsors' own "winning showcase" example almost exactly.
+  No new use case needed.
+- The originality/revolutionary angle IS the fused design: `payment-watch`
+  refuses to report a payment as trustworthy without an unconditional
+  risk check, proven live against real devnet data. Lead the showcase
+  write-up and video with this, not with a plugin list.
+- Tier defense, stated honestly in the write-up: `token-risk-check` is a
+  clear Tier 3 case (Token-2022 TLV parsing, matches sponsors' own
+  example). `payment-watch` is defensible via its fused logic being real
+  bounded computation, not a thin wrapper. `solana-pay-request` is
+  honestly closer to something a Tier 1 Skill could do — say so
+  explicitly rather than pretend otherwise; owning this is itself good
+  craft.
+- Frontier ideas from the new doc (agent-hires-agent/escrow, sub-agents,
+  x402 marketplaces, on-chain skill distribution, policy wallets,
+  transaction firewalls) are noted and deliberately **not pursued** —
+  wrong risk/time tradeoff against a proven, nearly-finished submission.
+  This is a considered decision, not an oversight — do not revisit
+  without a major runway change.
+
 ## What this is
 
 A submission for the "Build Solana-native plugins for Zeroclaw" bounty
 (Superteam Brasil, on Superteam Earn). Winner announcement: **August 21,
-2026**. One pull request to `zeroclaw-labs/zeroclaw-plugins`, containing
-one shared core crate and three plugins ("Idea 1: The Smart Payment
-Terminal" — see root README.md for the full pitch).
+2026**. One shared core crate and three plugins ("Idea 1: The Smart
+Payment Terminal" — see root README.md for the full pitch), submitted as
+a Discord showcase post per the RULE CHANGE above, not a pull request.
 
 **The developer working with you is learning Rust and Solana at the same
 time.** Prefer clear, well-commented code over clever code. Explain
@@ -300,7 +330,9 @@ demo works when it doesn't.
       gap, not a plugin bug) — write that up honestly rather than
       re-attempt it.
 - [ ] Record the demo video (≤3 minutes).
-- [ ] Open the PR to `zeroclaw-labs/zeroclaw-plugins` as work-in-progress.
+- [ ] Prepare showcase post: video + write-up + repo link, post in
+      `#solana-bounty` on Discord (see "RULE CHANGE — CONFIRMED" at the
+      top of this file — not a PR, do not open one).
 - [ ] Track E stretch: `sns-resolve`, then `spl-transfer-build` with
       durable nonce — only after everything above is done.
 - [ ] **Next thing to tackle:** make `payment-watch` actually notice a
