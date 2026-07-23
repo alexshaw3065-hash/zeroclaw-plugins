@@ -271,11 +271,16 @@ pub mod core {
     /// is never subject to this interception. `url` (the plain `solana:`
     /// URI) has no such problem -- it's just text -- so it's included
     /// directly here as a real fallback: a wallet or QR reader that can't
-    /// render/scan the image still gets something to tap or copy.
+    /// render/scan the image still gets something to tap or copy. Wrapped
+    /// in backticks: ZeroClaw's Telegram channel converts single-backtick
+    /// markdown to a real `<code>` span (`markdown_to_telegram_html` in
+    /// `zeroclaw-channels/src/telegram.rs`), which Telegram renders as a
+    /// monospace, tap-to-copy block -- exactly what a URL like this needs,
+    /// instead of wrapping mid-address as plain paragraph text.
     fn format_reply(output: &Output) -> String {
         let reference = output.reference.as_deref().unwrap_or("(none)");
         format!(
-            "Invoice Created\nInvoice: {reference}\nAmount: {} {}\nRecipient: {}\nPay URL: {}\nWaiting for payment...",
+            "Invoice Created\nInvoice: {reference}\nAmount: {} {}\nRecipient: {}\nPay URL: `{}`\nWaiting for payment...",
             output.amount,
             asset_label(&output.mint),
             short_addr(&output.recipient),
@@ -672,11 +677,20 @@ pub mod core {
                  Invoice: {WSOL_MINT}\n\
                  Amount: 25 USDC\n\
                  Recipient: 1111…1111\n\
-                 Pay URL: {}\n\
+                 Pay URL: `{}`\n\
                  Waiting for payment...",
                 output.url,
             );
             assert_eq!(output.reply, expected);
+        }
+
+        /// Backtick-wrapped so ZeroClaw's Telegram channel renders it as a
+        /// real `<code>` span (tap-to-copy), not paragraph text that wraps
+        /// mid-address -- see `format_reply`'s doc comment for why.
+        #[test]
+        fn reply_wraps_the_pay_url_in_backticks_for_tap_to_copy() {
+            let output = run(&base_args(), None, &Guardrails::default()).unwrap();
+            assert!(output.reply.contains(&format!("Pay URL: `{}`", output.url)));
         }
 
         /// Locks in a real, confirmed platform finding (2026-07-23): any

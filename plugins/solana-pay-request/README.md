@@ -161,7 +161,7 @@ Response:
   "memo": "Invoice #412 (table 4)",
   "reference": "So11111111111111111111111111111111111111112",
   "brl_estimate": "R$140.00",
-  "reply": "Invoice Created\nInvoice: So11111111111111111111111111111111111111112\nAmount: 25 SOL\nRecipient: 1111…1111\nPay URL: solana:11111111111111111111111111111111?amount=25&spl-token=So11111111111111111111111111111111111111112&reference=So11111111111111111111111111111111111111112&memo=Invoice%20%23412%20%28table%204%29\nWaiting for payment..."
+  "reply": "Invoice Created\nInvoice: So11111111111111111111111111111111111111112\nAmount: 25 SOL\nRecipient: 1111…1111\nPay URL: `solana:11111111111111111111111111111111?amount=25&spl-token=So11111111111111111111111111111111111111112&reference=So11111111111111111111111111111111111111112&memo=Invoice%20%23412%20%28table%204%29`\nWaiting for payment..."
 }
 ```
 
@@ -188,7 +188,7 @@ Invoice Created
 Invoice: So11111111111111111111111111111111111111112
 Amount: 25 SOL
 Recipient: 1111…1111
-Pay URL: solana:11111111111111111111111111111111?amount=25&spl-token=So11111111111111111111111111111111111111112&reference=So11111111111111111111111111111111111111112&memo=Invoice%20%23412%20%28table%204%29
+Pay URL: `solana:11111111111111111111111111111111?amount=25&spl-token=So11111111111111111111111111111111111111112&reference=So11111111111111111111111111111111111111112&memo=Invoice%20%23412%20%28table%204%29`
 Waiting for payment...
 ```
 
@@ -207,18 +207,23 @@ hands removes that whole class of bug. Specifics:
 - **Recipient** is shortened (`head…tail`) -- display only, since the
   actual payment path is the QR/URL, not this address needing to be
   read character-by-character.
-- **Pay URL** is the plain `solana:` URI, shown as-is (not a markdown
-  link -- most chat clients, including Telegram, won't render that
-  scheme as clickable even via markdown). A real, tap-or-copy fallback
-  alongside the QR image, for a wallet that can't scan or a client that
-  can't render the image.
+- **Pay URL** is the plain `solana:` URI -- not a markdown link (most
+  chat clients, including Telegram, won't render that scheme as
+  clickable even via markdown), but wrapped in backticks so ZeroClaw's
+  Telegram channel renders it as a real `<code>` span
+  (`markdown_to_telegram_html` in `zeroclaw-channels/src/telegram.rs`
+  converts single-backtick markdown to `<code>`), which Telegram shows
+  as a monospace, tap-to-copy block instead of paragraph text that wraps
+  mid-address. A real, tap-or-copy fallback alongside the QR image, for
+  a wallet that can't scan or a client that can't render the image.
 - Host-tested for exact output text:
   `reply_shows_a_known_mint_symbol_and_the_pay_url`,
   `reply_shows_sol_for_a_native_request`,
   `reply_shows_the_raw_address_for_an_unknown_mint`,
   `reply_shortens_the_recipient_but_not_the_reference`,
   `reply_never_invents_a_reference_when_none_was_given`,
-  `reply_never_embeds_an_image_marker_itself`.
+  `reply_never_embeds_an_image_marker_itself`,
+  `reply_wraps_the_pay_url_in_backticks_for_tap_to_copy`.
 
 **The `[IMAGE:<qr_url>]` marker is deliberately *not* inside `reply`.**
 An earlier version embedded it directly in `reply`, on the theory that
