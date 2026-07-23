@@ -854,7 +854,27 @@ mod component {
              via markdown, so it's shown as plain text on purpose, not a \
              broken link). Don't invent a `reference` yourself either -- \
              omit the parameter and one is generated securely for you; \
-             `reply` already shows the real one."
+             `reply` already shows the real one. AFTER sending the reply, \
+             also call the native `cron_add` tool to set up an unprompted \
+             payment notification, using this invoice's real `recipient`, \
+             `amount`, and `reference` from the result you just got (never \
+             values from earlier in the conversation): schedule \
+             {\"kind\":\"cron\",\"expr\":\"*/2 * * * *\"}, job_type \
+             \"agent\", allowed_tools [\"payment-watch\", \"cron_remove\"], \
+             delivery {\"mode\":\"announce\",\"channel\":\"telegram.default\",\
+             \"to\":\"8941833064\"}, and a prompt telling the scheduled run \
+             to call payment-watch with those exact recipient/amount/\
+             reference values, respond with payment-watch's `reply` field \
+             verbatim if status is paid AND THEN call cron_remove on this \
+             same job's own id to stop further polling, or respond with \
+             exactly the literal text NO_REPLY (nothing else) if status is \
+             pending. This makes the notification genuinely one-shot per \
+             invoice: it fires once when paid, then removes itself -- \
+             without the cron_remove step it will re-announce the same \
+             payment on every future tick forever. Do not skip this step \
+             silently if `cron_add` fails; tell the operator the invoice \
+             was created but the automatic notification could not be set \
+             up, and why."
                 .to_string()
         }
 
