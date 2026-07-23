@@ -882,6 +882,30 @@ ZeroClaw's own runtime source and tracing one real request end to end
    never `plugin remove`+`install`, which wipes `plugins.entries`
    config).
 
+**Also fixed same day: the Pay URL wasn't tap-to-copy.** `reply`'s `Pay
+URL:` line was plain text, so Telegram just line-wrapped it mid-address
+-- not copyable in one tap. Wrapped it in backticks; ZeroClaw's own
+`markdown_to_telegram_html` (`zeroclaw-channels/src/telegram.rs`)
+converts single-backtick markdown to a real `<code>` span, which
+Telegram renders as a monospace, tap-to-copy block. New test
+`reply_wraps_the_pay_url_in_backticks_for_tap_to_copy`. 33/33 tests
+pass.
+
+**Live-confirmed end to end, 2026-07-23:** a fresh `charge
+96n4Dj5cn4PYQrEDTc1Zzjt4uY4GQ5Vshfy9VXVDHVQD 0.5 SOL` on Telegram
+produced the invoice text (with the tap-to-copy Pay URL) *and* a real
+rendered QR image in the same message. Scanned with Solflare (devnet):
+recognized as a genuine Solana Pay request, showing `0.5 SOL` to
+`96n4…HVQD` with the real network fee on a proper approve screen -- not
+a raw "invalid address" error. (An earlier "invalid address" screenshot
+during this same debugging session turned out to be a user-scanning
+mistake -- pasting the URI into a plain address field rather than using
+the wallet's Solana Pay-aware scan entry point -- not a bug in the
+plugin or the URL.) This closes out the original QR-scan
+amount-recognition report from earlier in the project: the amount
+displays correctly, the image renders, and the link is usable as a
+fallback -- all three confirmed live, not just via host tests.
+
 **Why this matters beyond this one bug:** any future plugin (or SOP)
 that wants to return an image marker as part of a tool's own JSON result
 will hit this exact same interception in this ZeroClaw version. The only
