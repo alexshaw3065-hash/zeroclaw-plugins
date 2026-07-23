@@ -645,10 +645,29 @@ case closely matches the sponsors' own example already. (Full detail:
    `crates/zeroclaw-plugins/src/component.rs:229`, called for every
    plugin regardless of permissions), not assumed from general WASI
    knowledge. 8/8 host tests still pass; `cargo clippy -D warnings`
-   clean on host and wasm; wasm32-wasip2 release build succeeds. Not yet
-   exercised against a live RPC endpoint (the other three plugins were,
-   during the original devnet verification pass; this one is newer) --
-   worth doing before the demo, not blocking.
+   clean on host and wasm; wasm32-wasip2 release build succeeds.
+   **Live-verified against real mainnet, 2026-07-23** (full detail: the
+   plugin's own README, "Live mainnet verification"). Devnet has no
+   meaningful public SNS registry to test against and this plugin
+   doesn't carry SNS's separate devnet root-domain constant yet
+   (`5eoDkP6vCQBXqDV9YN2NdUs3nmML3dMRNmEYpiyVNBm2`, found in the real
+   source but not wired in) -- a read-only mainnet check was judged the
+   more faithful "live" proof, since that's the network SNS domains
+   actually, meaningfully live on. `bonfida.sol` resolved correctly
+   (address bit-identical to the golden-vector test, independently
+   reconfirmed live: the real account there is owned by our hardcoded
+   Name Service program ID); `dex.bonfida.sol` derived to the same
+   address as the golden vector but correctly reported "unregistered"
+   (that specific domain isn't currently registered -- not a derivation
+   bug, the address matches the reference exactly); a
+   definitely-never-registered domain also correctly resolved to
+   "unregistered." Harness: standalone Rust binary in scratch calling
+   `core::domain_key`/`core::run` directly (same code the wasm ships),
+   native HTTP client instead of `waki`, same pattern as the original
+   three-plugin devnet verification. Also refreshed the
+   `payment-watch-poll` SOP (`~/.zeroclaw/data/sops/payment-watch-poll/`,
+   outside this repo) to send the new `reply` field instead of the old
+   free-text `summary` -- it predated the reply-formatting work.
 
 **RULE:** step 1 takes priority over everything else, including items
 already "in progress" from before — it's the single highest-leverage
