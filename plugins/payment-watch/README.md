@@ -102,14 +102,24 @@ time — mistaken for this invoice's payment.
 - The risk screening is unconditional and lives in core (`confirm` →
   `assess`), so a paid-but-dangerous mint is surfaced as `FLAGGED RED`, not
   quietly confirmed.
-- **The Trust Report:** a `"paid"` result carries a `trust_report` object
-  (`recipient_verified`, `amount_verified`, `mint_verified`,
-  `reference_verified`) — each field reflects something `match_payment`
-  actually checked against on-chain data, not merely echoed input. This
-  doesn't add new checking; it makes the guarantees above individually
-  legible instead of collapsed into one opaque `"paid"` string, so an
-  operator (or a judge reading the write-up) can see exactly what was
-  verified rather than taking the status field's word for it.
+- **The Trust Report:** every result — `"paid"` or `"pending"` — carries a
+  `trust_report` object (`recipient_verified`, `amount_status`,
+  `mint_verified`, `reference_verified`, `tx_confirmed`). On `"paid"`
+  every field reflects something `match_payment` already enforced (not
+  merely echoed input); on `"pending"` it's an honest, best-effort
+  diagnosis of whatever's been observed so far (e.g. a transfer arrived
+  in the right mint but under the requested amount — `amount_status:
+  "under"`), computed by re-inspecting the same already-fetched transfer
+  list, never feeding back into the paid/pending decision itself. This
+  makes the guarantees individually legible instead of collapsed into
+  one opaque status string, so an operator (or a judge reading the
+  write-up) can see exactly what was and wasn't verified rather than
+  taking the status field's word for it.
+- **Deterministic reply text, not LLM-composed:** `output.reply` is a
+  ready-to-send checklist built by `core::format_reply` from the fields
+  above plus the real risk verdict — never an invented confidence score.
+  The tool description instructs the agent to send it verbatim. See
+  "Reply formatting" below for the full green/red contrast.
 
 ### Prompt-injection / abuse test transcript
 
@@ -138,7 +148,8 @@ Both are automated tests in `plugins/payment-watch/src/lib.rs`
 
 ## Worked example
 
-Request (poll for a 25-USDC invoice, correlated by a reference):
+Request (poll for a 25-USDC invoice, correlated by a reference, with
+`brl_rate = "5.60"` set):
 ```json
 {
   "recipient": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
@@ -148,13 +159,29 @@ Request (poll for a 25-USDC invoice, correlated by a reference):
 }
 ```
 
-Response while waiting:
+Response while waiting (nothing observed yet):
 ```json
-{ "status": "pending", "amount": "25", "mint": "EPjF…Dt1v",
-  "risk_reasons": [], "summary": "No matching payment yet (25 of EPjF…Dt1v to 9xQe…VFin)." }
+{
+  "status": "pending",
+  "signature": null,
+  "amount": "25",
+  "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "risk_level": null,
+  "risk_reasons": [],
+  "summary": "No matching payment yet (25 of EPjF…Dt1v to 9xQe…VFin).",
+  "brl_estimate": null,
+  "trust_report": {
+    "recipient_verified": false,
+    "amount_status": "none",
+    "mint_verified": false,
+    "reference_verified": null,
+    "tx_confirmed": false
+  },
+  "reply": "Payment Verification\n✗ Amount matches\n✗ Recipient verified\n✗ Transaction confirmed\nVerdict: NOT CONFIRMED — do not treat this as paid."
+}
 ```
 
-Response once it lands in a clean token (with `brl_rate = "5.60"` set):
+Response once it lands in a clean token:
 ```json
 {
   "status": "paid",
@@ -167,18 +194,86 @@ Response once it lands in a clean token (with `brl_rate = "5.60"` set):
   "brl_estimate": "R$140.00",
   "trust_report": {
     "recipient_verified": true,
-    "amount_verified": true,
+    "amount_status": "match",
     "mint_verified": true,
-    "reference_verified": true
-  }
+    "reference_verified": true,
+    "tx_confirmed": true
+  },
+  "reply": "Payment Verification\n✓ Amount matches\n✓ Recipient verified\n✓ Reference matches\n✓ Transaction confirmed\n✓ Token risk: GREEN — no red flags found in mint/freeze authority, holder concentration, or Token-2022 extensions\nVerdict: PAYMENT VERIFIED — safe to trust."
 }
 ```
 `brl_estimate` is absent entirely without `brl_rate` configured, and never
 appears on a "pending" result — there is nothing confirmed yet to convert.
-`trust_report` is present only on "paid" (`null`/absent on "pending");
-`reference_verified` is `null` when the invoice didn't specify a
-`reference` at all (not applicable), never `false` — a transfer failing
-that check is filtered out by `match_payment` before "paid" can happen.
+`trust_report` is present on every result now, `"paid"` or `"pending"`
+(see "The Trust Report" above for why); `reference_verified` is `null`
+when either no `reference` was requested, or nothing's landed yet to
+check it against — never `false` on a `"paid"` result, since a transfer
+failing that check is filtered out by `match_payment` before `"paid"`
+can happen at all.
+
+## Reply formatting — the core safety story, GREEN vs RED side by side
+
+`output.reply` is the exact text the tool description tells the agent to
+send **verbatim**, built by `core::format_reply` from `trust_report` plus
+the real risk verdict — not composed by the LLM, and never an invented
+confidence score or percentage. This is deliberately the same visual
+weight and structure whether the news is good or bad — RED is not a
+quieter or truncated GREEN:
+
+**GREEN** (clean mint, `risk_level: "green"`):
+```
+Payment Verification
+✓ Amount matches
+✓ Recipient verified
+✓ Reference matches
+✓ Transaction confirmed
+✓ Token risk: GREEN — no red flags found in mint/freeze authority, holder concentration, or Token-2022 extensions
+Verdict: PAYMENT VERIFIED — safe to trust.
+```
+
+**RED** (same payment mechanics -- amount, recipient, reference, and the
+transaction itself all check out -- but the paying mint has a permanent
+delegate and an active freeze authority, the exact risky mint from this
+project's live devnet verification below):
+```
+Payment Verification
+✓ Amount matches
+✓ Recipient verified
+✓ Reference matches
+✓ Transaction confirmed
+✗ Token risk: RED — a permanent delegate can move holder funds without consent; freeze authority is still active
+Verdict: DO NOT TRUST THIS PAYMENT.
+```
+
+Same five lines, same checklist shape, same prominence -- the only thing
+that changes is the real verdict and the real reasons from `assess`. This
+is the whole point of the fusion: a real, landed, correctly-matched
+payment can still end in "do not trust this," stated as plainly as a
+clean one ends in "safe to trust." Host-tested exact-text, both
+directions: `reply_green_case_exact_text`, `reply_red_case_exact_text`,
+plus `red_reply_is_not_a_downgraded_green_reply`, which asserts the two
+have identical structure (line count, checklist shape) and not just
+similar-looking text.
+
+**NOT CONFIRMED** (a transfer for the right mint+reference landed, but
+under the requested amount):
+```
+Payment Verification
+✗ Amount matches (underpaid)
+✓ Recipient verified
+✓ Reference matches
+✗ Transaction confirmed
+Verdict: NOT CONFIRMED — do not treat this as paid.
+```
+Every line reflects a real, already-computed boolean or the tri-state
+`amount_status` (`match` / `under` / `none`) — nothing here is inferred
+or invented for display purposes; `diagnose_pending` only re-reads the
+same transfer list `match_payment` already looked at, and never feeds
+back into the paid/pending decision itself. An AMBER verdict (e.g. active
+mint authority, or a thin/missing liquidity pool if `token-risk-check`'s
+LP check is ever wired in here) follows the same checklist shape with
+`✗ Token risk: AMBER — <reason>` and `Verdict: PAYMENT LANDED but flagged
+AMBER — review before trusting.` (test: `reply_amber_case_exact_text`).
 
 ## What's built vs. what's left
 
@@ -211,9 +306,17 @@ that check is filtered out by `match_payment` before "paid" can happen.
       `match_payment`, not just inferred from the RPC query) — see
       "Threat model" above.
 - [x] The Trust Report: `trust_report` (`recipient_verified`,
-      `amount_verified`, `mint_verified`, `reference_verified`) on every
-      "paid" result, making the already-enforced guarantees individually
-      auditable instead of one opaque status string.
+      `amount_status`, `mint_verified`, `reference_verified`,
+      `tx_confirmed`) on **every** result, "paid" or "pending" — on
+      "paid" the already-enforced guarantees made individually auditable;
+      on "pending" an honest, non-decision-affecting diagnosis of what's
+      been observed so far.
+- [x] Deterministic reply formatting (`output.reply`), built in
+      `core::format_reply` and sent verbatim by the agent instead of
+      composed by the LLM — see "Reply formatting" above for the full
+      GREEN/RED/AMBER/NOT CONFIRMED contrast. 7 exact-text host tests,
+      including one that asserts RED is structurally identical to GREEN
+      (not a downgraded version of it).
 - [ ] Durable-nonce / blockhash-expiry handling is **not applicable here**
       (this plugin builds no transactions — it only observes); it becomes
       relevant only if a future T1 builder is added.

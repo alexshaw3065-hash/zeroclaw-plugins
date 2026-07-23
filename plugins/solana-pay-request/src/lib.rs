@@ -64,6 +64,11 @@ pub mod core {
         /// "R$<amount * brl_rate>", present only when the operator has
         /// configured a `brl_rate`. Display only -- never part of `url`.
         pub brl_estimate: Option<String>,
+        /// The exact, ready-to-send reply text -- see `format_reply`. Built
+        /// here, in core, from the fields above, so it's host-tested like
+        /// everything else in this file; the shim's job is to hand this
+        /// straight to the channel, not to compose its own wording.
+        pub reply: String,
     }
 
     /// Operator-configured guardrails, enforced here in core so they can't
@@ -192,7 +197,7 @@ pub mod core {
 
         let brl_estimate = brl_rate.and_then(|rate| format_brl(&args.amount, rate));
 
-        Ok(Output {
+        let mut output = Output {
             url,
             qr_url,
             recipient: recipient.to_base58(),
@@ -201,7 +206,64 @@ pub mod core {
             memo: args.memo.clone(),
             reference: reference.map(|r| r.to_base58()),
             brl_estimate,
-        })
+            reply: String::new(),
+        };
+        output.reply = format_reply(&output);
+        Ok(output)
+    }
+
+    /// A small table of mints this plugin can name in plain text instead of
+    /// a raw address -- deliberately tiny and easy to audit, not an attempt
+    /// at a general token registry. Anything not listed here (including
+    /// every devnet/test mint used while building this repo) falls back to
+    /// showing the address itself, never a guessed or invented symbol.
+    const KNOWN_MINTS: &[(&str, &str)] = &[
+        ("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "USDC"),
+        ("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "USDT"),
+        ("So11111111111111111111111111111111111111112", "SOL"),
+    ];
+
+    /// The asset label for the "Amount:" line: the mint's known symbol, or
+    /// the mint address itself when it isn't in `KNOWN_MINTS`, or "SOL" for
+    /// a native request (no `mint` at all).
+    fn asset_label(mint: &Option<String>) -> String {
+        match mint {
+            None => "SOL".to_string(),
+            Some(m) => KNOWN_MINTS
+                .iter()
+                .find(|(addr, _)| addr == m)
+                .map(|(_, symbol)| symbol.to_string())
+                .unwrap_or_else(|| m.clone()),
+        }
+    }
+
+    /// Abbreviate a long base58 string as `head…tail` for compact display --
+    /// same convention `payment-watch` uses for the same reason.
+    fn short_addr(s: &str) -> String {
+        if s.len() <= 12 {
+            return s.to_string();
+        }
+        format!("{}…{}", &s[..4], &s[s.len() - 4..])
+    }
+
+    /// The exact reply text a channel should send verbatim for a freshly
+    /// built invoice. Pure formatting over already-computed `Output` fields
+    /// -- no new logic, nothing invented (no confidence score, no guessed
+    /// amount). `reference` is always `Some` in practice by the time this
+    /// runs through the real wasm shim (it auto-generates one when the
+    /// caller omits it -- see `component::generate_reference`), but this
+    /// function stays total over `Option` since it's called from pure,
+    /// host-tested `core` and must handle being tested directly with a
+    /// `None` reference too.
+    fn format_reply(output: &Output) -> String {
+        let reference = output.reference.as_deref().unwrap_or("(none)");
+        format!(
+            "Invoice Created\nInvoice: {reference}\nAmount: {} {}\nRecipient: {}\n[IMAGE:{}]\nWaiting for payment...",
+            output.amount,
+            asset_label(&output.mint),
+            short_addr(&output.recipient),
+            output.qr_url,
+        )
     }
 
     /// "R$<amount * rate>", formatted to 2 decimal places. `None` on a
@@ -543,6 +605,68 @@ pub mod core {
             // before the mint allowlist) -- either way, never Ok.
             assert!(run(&args, None, &guardrails).is_err());
         }
+
+        // ---- format_reply --------------------------------------------------
+
+        #[test]
+        fn reply_shows_a_known_mint_symbol_and_the_qr_marker() {
+            let args = Args {
+                mint: Some("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()),
+                reference: Some(WSOL_MINT.to_string()),
+                ..base_args()
+            };
+            let output = run(&args, None, &Guardrails::default()).unwrap();
+            let expected = format!(
+                "Invoice Created\n\
+                 Invoice: {WSOL_MINT}\n\
+                 Amount: 25 USDC\n\
+                 Recipient: 1111…1111\n\
+                 [IMAGE:{}]\n\
+                 Waiting for payment...",
+                output.qr_url,
+            );
+            assert_eq!(output.reply, expected);
+        }
+
+        #[test]
+        fn reply_shows_sol_for_a_native_request() {
+            let args = Args { reference: Some(WSOL_MINT.to_string()), ..base_args() };
+            let output = run(&args, None, &Guardrails::default()).unwrap();
+            assert!(output.reply.contains("Amount: 25 SOL\n"));
+        }
+
+        #[test]
+        fn reply_shows_the_raw_address_for_an_unknown_mint() {
+            // A real, valid mint that just isn't in KNOWN_MINTS -- must show
+            // the address itself, never a guessed or blank symbol.
+            let unknown = "9e8Bacw455vQjjQqUbwJaL3J4SpRjDCaJd7MPcLHZphQ";
+            let args = Args { mint: Some(unknown.to_string()), ..base_args() };
+            let output = run(&args, None, &Guardrails::default()).unwrap();
+            assert!(output.reply.contains(&format!("Amount: 25 {unknown}\n")));
+        }
+
+        #[test]
+        fn reply_shortens_the_recipient_but_not_the_reference() {
+            let args = Args {
+                recipient: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
+                reference: Some(WSOL_MINT.to_string()),
+                ..base_args()
+            };
+            let output = run(&args, None, &Guardrails::default()).unwrap();
+            assert!(output.reply.contains("Recipient: EPjF…Dt1v\n"));
+            // The reference is functional (pasted elsewhere), so it's shown
+            // in full, unlike the purely-for-display recipient line.
+            assert!(output.reply.contains(&format!("Invoice: {WSOL_MINT}\n")));
+        }
+
+        #[test]
+        fn reply_never_invents_a_reference_when_none_was_given() {
+            // core::run can be called directly with reference: None (the
+            // real wasm shim never does -- it auto-generates one first --
+            // but this function must still behave honestly if it ever is).
+            let output = run(&base_args(), None, &Guardrails::default()).unwrap();
+            assert!(output.reply.contains("Invoice: (none)\n"));
+        }
     }
 }
 
@@ -619,25 +743,16 @@ mod component {
              recipient, amount, and optional SPL token mint/memo/reference. \
              Never signs or moves funds -- returns a request only, which a \
              human pays from their own wallet by scanning the QR or opening \
-             the URL. `solana:` is not a scheme most chat clients (including \
-             Telegram) will render as a clickable link even inside markdown \
-             link syntax -- don't bother trying `[text](url)` for it, it \
-             renders as literal unparsed text instead of a link. Present \
-             the result two ways only: (1) `url` once, in a single code \
-             block, so the operator can copy/paste it into a wallet that \
-             supports manual entry; (2) `qr_url` (a rendered QR code image \
-             of that same URL) as `[IMAGE:<qr_url>]` on channels that \
-             support inline image attachments -- this is the real one-tap \
-             path, since scanning a wallet's camera at the QR bypasses the \
-             link-scheme problem entirely. Do not show `url` a second time \
-             or attempt a markdown hyperlink for it. If `brl_estimate` is \
-             present in the result, show it alongside `amount`, e.g. \
-             \"R$140.00 (5 of AGqb...9V8r)\" -- omit it entirely when it's \
-             absent (no BRL rate configured for this asset), never invent \
-             a figure yourself. Don't invent a `reference` yourself either \
-             -- omit the parameter and one is generated securely for you; \
-             the response's `reference` field is the real one to hand to \
-             payment-watch."
+             the URL. Send the result's `reply` field to the channel \
+             VERBATIM as your entire response -- it is already exactly \
+             formatted (invoice summary + the `[IMAGE:...]` QR marker), \
+             including correct handling of `solana:` links (most chat \
+             clients, including Telegram, won't render that scheme as \
+             clickable even via markdown, so `reply` never tries to). Do \
+             not paraphrase it, reformat it, summarize it, or add your own \
+             text before/after it. Don't invent a `reference` yourself \
+             either -- omit the parameter and one is generated securely for \
+             you; `reply` already shows the real one."
                 .to_string()
         }
 

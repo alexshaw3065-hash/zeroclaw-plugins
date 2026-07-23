@@ -154,7 +154,8 @@ Response:
   "mint": "So11111111111111111111111111111111111111112",
   "memo": "Invoice #412 (table 4)",
   "reference": "So11111111111111111111111111111111111111112",
-  "brl_estimate": "R$140.00"
+  "brl_estimate": "R$140.00",
+  "reply": "Invoice Created\nInvoice: So11111111111111111111111111111111111111112\nAmount: 25 SOL\nRecipient: 1111…1111\n[IMAGE:https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=...]\nWaiting for payment..."
 }
 ```
 
@@ -162,16 +163,49 @@ Response:
 raw payment link; `output.qr_url` is that same URL pre-rendered as a
 scannable QR code image via the free, no-auth goQR.me API
 (api.qrserver.com — no request limit, no attribution required, and they
-state they don't log QR contents). On a channel that supports inline
-image attachments (confirmed working on Telegram), include it in a reply
-as `[IMAGE:<qr_url>]` to send a real scannable photo, not just a link —
-this is the reliable one-tap path, since a wallet's camera scan bypasses
-the "does this chat app recognize the `solana:` scheme" problem entirely
-(most don't, including Telegram — confirmed live: neither plain-text
-auto-linking nor an explicit markdown `[text](url)` hyperlink renders as
-clickable for this scheme, so don't attempt either). Omit `mint` to
-request native SOL instead of an SPL token. `brl_estimate` appears only
-when `brl_rate` is configured.
+state they don't log QR contents). Omit `mint` to request native SOL
+instead of an SPL token. `brl_estimate` appears only when `brl_rate` is
+configured.
+
+## Reply formatting -- built by the plugin, not the LLM
+
+`output.reply` is the exact text the tool description tells the agent to
+send **verbatim**, not compose itself:
+
+```
+Invoice Created
+Invoice: So11111111111111111111111111111111111111112
+Amount: 25 SOL
+Recipient: 1111…1111
+[IMAGE:https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=...]
+Waiting for payment...
+```
+
+Built by `core::format_reply` from the exact same fields already in
+`Output` -- no new logic, nothing the LLM has to get right on its own.
+This exists because letting the model compose the reply turned out to be
+a real, repeated failure mode earlier in this project: markdown-hyperlink
+attempts that rendered as literal text, and (on a smaller/weaker model)
+outright malformed tool arguments. Taking formatting out of the model's
+hands removes that whole class of bug. Specifics:
+- **Invoice** shows the full `reference` (functional -- it's what gets
+  pasted into `payment-watch`), never shortened.
+- **Amount** shows a known symbol (`USDC`, `USDT`, `SOL`) for a small,
+  explicit, auditable table of well-known mints (`core::KNOWN_MINTS`), or
+  the raw mint address for anything else -- never a guessed symbol.
+- **Recipient** is shortened (`head…tail`) -- display only, since the
+  actual payment path is the QR/URL, not this address needing to be
+  read character-by-character.
+- The `[IMAGE:...]` marker is the same mechanism already confirmed
+  working live on Telegram (see "What's built" below) -- embedding it in
+  `reply` instead of leaving the model to add it works identically, since
+  the channel strips the marker from whatever final text it receives.
+- Host-tested for exact output text:
+  `reply_shows_a_known_mint_symbol_and_the_qr_marker`,
+  `reply_shows_sol_for_a_native_request`,
+  `reply_shows_the_raw_address_for_an_unknown_mint`,
+  `reply_shortens_the_recipient_but_not_the_reference`,
+  `reply_never_invents_a_reference_when_none_was_given`.
 
 ## What's built vs. what's left
 
@@ -206,6 +240,9 @@ when `brl_rate` is configured.
       enforced in `core::run` so no request-side input can talk around
       them — prompt-injection tested
       (`guardrails_cannot_be_overridden_by_anything_in_the_request`).
+- [x] Deterministic reply formatting (`output.reply`), built in core and
+      sent verbatim by the agent instead of composed by the LLM -- see
+      "Reply formatting" above. 5 exact-text host tests.
 
 ## What we'd build next
 

@@ -63,30 +63,58 @@ pub mod core {
         pub has_reference: bool,
     }
 
-    /// Per-field verification detail for a "paid" result -- makes the
-    /// confirmation individually auditable instead of one opaque status
-    /// string. Every field here reflects something actually checked
-    /// against on-chain data by `match_payment`/`transfers_from_tx_meta`,
-    /// not merely echoed input; a "paid" result cannot exist with any of
-    /// these false; on "pending" this whole report is absent, since
-    /// nothing has been verified yet.
+    /// Where the requested amount stands relative to whatever's actually
+    /// landed. `Match` only ever appears on a "paid" result. `Under` and
+    /// `None` are purely diagnostic -- informational detail surfaced on a
+    /// "pending" result, never a factor in the paid/pending decision
+    /// itself (that stays entirely `match_payment`'s job, unchanged).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum AmountStatus {
+        /// A landed transfer meets or exceeds the requested amount.
+        Match,
+        /// A transfer for the right mint (and reference, if requested) has
+        /// landed, but for less than the requested amount.
+        Under,
+        /// No transfer relevant to this invoice has landed yet.
+        None,
+    }
+
+    /// Per-field verification detail -- makes the result individually
+    /// auditable instead of one opaque status string. On a "paid" result
+    /// every field here reflects something `match_payment` already
+    /// enforced (not merely echoed input) and is unconditionally
+    /// satisfied, by construction. On a "pending" result these are an
+    /// honest, best-effort diagnosis of what -- if anything -- has been
+    /// observed so far, computed by inspecting the same already-fetched
+    /// transfer list `match_payment` looked at; this diagnosis never
+    /// feeds back into the paid/pending decision itself, only into what
+    /// gets displayed while waiting.
     #[derive(Debug, Serialize, PartialEq)]
     pub struct TrustReport {
-        /// The transaction's balance delta credited the requested
-        /// recipient -- `transfers_from_tx_meta` only ever produces a
-        /// transfer for the exact recipient it was asked about.
+        /// Whether anything at all has landed at the requested recipient
+        /// (any mint, any amount, any reference). Always `true` on a
+        /// "paid" result, by construction (`transfers_from_tx_meta` only
+        /// ever produces transfers for the exact recipient it was asked
+        /// about, so an unmatched transfer never enters `observed` for a
+        /// different recipient in the first place).
         pub recipient_verified: bool,
-        /// The landed amount met or exceeded the requested amount.
-        pub amount_verified: bool,
-        /// The paying asset matched what was requested (native SOL
-        /// matches a mint-less request).
+        /// See `AmountStatus`.
+        pub amount_status: AmountStatus,
+        /// Whether a transfer in the requested mint (native SOL matches a
+        /// mint-less request) has been observed.
         pub mint_verified: bool,
-        /// `Some(true)` when a `reference` was requested and found as an
-        /// account key in the paying transaction; `None` when no
-        /// `reference` was requested at all (not applicable). Never
-        /// `Some(false)` -- a transfer failing this check is filtered out
-        /// by `match_payment` before a "paid" result can exist.
+        /// `None` when no `reference` was requested at all (not
+        /// applicable), or when no mint-matching transfer has been
+        /// observed yet to check it against. `Some(true)`/`Some(false)`
+        /// once there's a candidate transfer to actually check -- on a
+        /// "paid" result this is always `Some(true)` when a reference was
+        /// requested, since `match_payment` filters out anything else.
         pub reference_verified: Option<bool>,
+        /// Whether a transaction satisfying the full request (recipient +
+        /// mint + amount + reference) has actually been confirmed.
+        /// `true` only on "paid".
+        pub tx_confirmed: bool,
     }
 
     #[derive(Debug, Serialize, PartialEq)]
@@ -110,10 +138,15 @@ pub mod core {
         /// README's "Brazil touch." Always `None` on a "pending" result;
         /// a not-yet-landed payment has nothing confirmed to convert.
         pub brl_estimate: Option<String>,
-        /// Per-field verification detail -- see `TrustReport`. Present
-        /// only on a "paid" result, `None` on "pending" (nothing to
-        /// report on yet).
-        pub trust_report: Option<TrustReport>,
+        /// Per-field verification detail -- see `TrustReport`. Always
+        /// present: on "paid" every field is satisfied; on "pending" it's
+        /// an honest diagnosis of what's been observed so far.
+        pub trust_report: TrustReport,
+        /// The exact, ready-to-send reply text -- see `format_reply`.
+        /// Built here, in core, from the fields above, so it's
+        /// host-tested like everything else; the shim's job is to hand
+        /// this straight to the channel, not compose its own wording.
+        pub reply: String,
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -384,7 +417,22 @@ pub mod core {
             )
         };
 
-        Output {
+        // Every field here is `true`/`Match` by construction: `matched`
+        // only ever reached this function via `match_payment`, which
+        // already enforced recipient (transfers_from_tx_meta only parses
+        // transfers credited to the requested recipient), mint, amount,
+        // and reference. This isn't new checking -- it's making
+        // already-enforced guarantees legible per-field instead of
+        // collapsing them into one opaque "paid".
+        let trust_report = TrustReport {
+            recipient_verified: true,
+            amount_status: AmountStatus::Match,
+            mint_verified: true,
+            reference_verified: args.reference.is_some().then_some(true),
+            tx_confirmed: true,
+        };
+
+        let mut output = Output {
             status: "paid".to_string(),
             signature: Some(matched.signature.clone()),
             amount: Some(args.amount.clone()),
@@ -393,29 +441,26 @@ pub mod core {
             risk_reasons: report.reasons,
             summary,
             brl_estimate: brl_rate.and_then(|rate| format_brl(&args.amount, rate)),
-            // Every field here is `true` by construction: `matched` only
-            // ever reached this function via `match_payment`, which
-            // already enforced recipient (transfers_from_tx_meta only
-            // parses transfers credited to the requested recipient),
-            // mint, amount, and reference. This isn't new checking -- it's
-            // making already-enforced guarantees legible per-field
-            // instead of collapsing them into one opaque "paid".
-            trust_report: Some(TrustReport {
-                recipient_verified: true,
-                amount_verified: true,
-                mint_verified: true,
-                reference_verified: args.reference.is_some().then_some(true),
-            }),
-        }
+            trust_report,
+            reply: String::new(),
+        };
+        output.reply = format_reply(&output);
+        output
     }
 
-    /// Build a "pending" result -- nothing matching has landed yet.
-    pub fn pending(args: &Args) -> Output {
+    /// Build a "pending" result -- nothing matching (mint + amount +
+    /// reference) has landed yet. `observed` is the same already-fetched
+    /// transfer list `match_payment` looked at; inspecting it again here is
+    /// purely diagnostic (see `diagnose_pending`) and changes nothing
+    /// about the paid/pending decision itself, which already happened
+    /// before this function was ever called.
+    pub fn pending(args: &Args, observed: &[ObservedTransfer]) -> Output {
         let asset = match &args.mint {
             Some(m) => format!("{} of {}", args.amount, short_addr(m)),
             None => format!("{} SOL", args.amount),
         };
-        Output {
+        let trust_report = diagnose_pending(args, observed);
+        let mut output = Output {
             status: "pending".to_string(),
             signature: None,
             amount: Some(args.amount.clone()),
@@ -424,7 +469,42 @@ pub mod core {
             risk_reasons: Vec::new(),
             summary: format!("No matching payment yet ({asset} to {}).", short_addr(&args.recipient)),
             brl_estimate: None,
-            trust_report: None,
+            trust_report,
+            reply: String::new(),
+        };
+        output.reply = format_reply(&output);
+        output
+    }
+
+    /// Best-effort, display-only diagnosis of what's been observed so far,
+    /// for a "pending" result's `TrustReport`. Looks for the closest
+    /// candidate transfer to this invoice (right mint, and right reference
+    /// when one was requested) among `observed` -- if one exists, it must
+    /// be an underpayment (`AmountStatus::Under`): if it had met the
+    /// requested amount, `match_payment` would already have matched it and
+    /// `confirm` would have run instead of `pending`. This function never
+    /// influences that decision, only what gets displayed while waiting.
+    fn diagnose_pending(args: &Args, observed: &[ObservedTransfer]) -> TrustReport {
+        let expected_mint = args.mint.as_deref();
+        let candidate = observed.iter().find(|t| {
+            t.mint.as_deref() == expected_mint && (args.reference.is_none() || t.has_reference)
+        });
+
+        TrustReport {
+            // `observed` only ever contains transfers credited to the
+            // requested recipient (see transfers_from_tx_meta) -- "is
+            // there anything at all" is the honest question this can
+            // answer, not "is the recipient correct" (that's not a
+            // meaningful failure mode here).
+            recipient_verified: !observed.is_empty(),
+            amount_status: if candidate.is_some() { AmountStatus::Under } else { AmountStatus::None },
+            mint_verified: candidate.is_some(),
+            reference_verified: match (args.reference.is_some(), candidate) {
+                (false, _) => None,
+                (true, None) => None,
+                (true, Some(t)) => Some(t.has_reference),
+            },
+            tx_confirmed: false,
         }
     }
 
@@ -451,6 +531,59 @@ pub mod core {
             return None;
         }
         Some(format!("R${brl:.2}"))
+    }
+
+    /// The exact reply text a channel should send verbatim: a checklist
+    /// built from `TrustReport`'s already-computed fields, plus (on
+    /// "paid") the real risk verdict and reasons from `assess` -- never an
+    /// invented confidence score, only real green/amber/red and the real
+    /// booleans already on `output`. Pure formatting over an already-built
+    /// `Output`, no new logic: the paid/pending decision and the risk
+    /// verdict both happened before this function is ever called.
+    fn format_reply(output: &Output) -> String {
+        let report = &output.trust_report;
+        let mut lines = vec!["Payment Verification".to_string()];
+
+        lines.push(checklist_line(
+            report.amount_status == AmountStatus::Match,
+            "Amount matches",
+            match report.amount_status {
+                AmountStatus::Under => " (underpaid)",
+                AmountStatus::Match | AmountStatus::None => "",
+            },
+        ));
+        lines.push(checklist_line(report.recipient_verified, "Recipient verified", ""));
+        if let Some(reference_ok) = report.reference_verified {
+            lines.push(checklist_line(reference_ok, "Reference matches", ""));
+        }
+        lines.push(checklist_line(report.tx_confirmed, "Transaction confirmed", ""));
+
+        if output.status == "paid" {
+            let level = output.risk_level.as_deref().unwrap_or("unknown");
+            let mark = if level == "green" { "\u{2713}" } else { "\u{2717}" };
+            lines.push(format!(
+                "{mark} Token risk: {} — {}",
+                level.to_uppercase(),
+                output.risk_reasons.join("; "),
+            ));
+            lines.push(
+                match level {
+                    "green" => "Verdict: PAYMENT VERIFIED — safe to trust.",
+                    "red" => "Verdict: DO NOT TRUST THIS PAYMENT.",
+                    _ => "Verdict: PAYMENT LANDED but flagged AMBER — review before trusting.",
+                }
+                .to_string(),
+            );
+        } else {
+            lines.push("Verdict: NOT CONFIRMED — do not treat this as paid.".to_string());
+        }
+
+        lines.join("\n")
+    }
+
+    fn checklist_line(ok: bool, label: &str, suffix: &str) -> String {
+        let mark = if ok { "\u{2713}" } else { "\u{2717}" };
+        format!("{mark} {label}{suffix}")
     }
 
     #[cfg(test)]
@@ -724,10 +857,11 @@ pub mod core {
             let observed = spl_transfer(25_000_000);
             let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
             let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, None);
-            let report = out.trust_report.expect("a paid result must carry a trust report");
+            let report = out.trust_report;
             assert!(report.recipient_verified);
-            assert!(report.amount_verified);
+            assert_eq!(report.amount_status, AmountStatus::Match);
             assert!(report.mint_verified);
+            assert!(report.tx_confirmed);
             // No reference was requested in this invoice -- not applicable.
             assert_eq!(report.reference_verified, None);
         }
@@ -739,14 +873,50 @@ pub mod core {
             let observed = spl_transfer(25_000_000); // has_reference: true
             let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
             let out = confirm(&args, &observed, &facts, None);
-            assert_eq!(out.trust_report.unwrap().reference_verified, Some(true));
+            assert_eq!(out.trust_report.reference_verified, Some(true));
         }
 
         #[test]
-        fn pending_never_carries_a_trust_report() {
-            // Nothing has landed yet -- there is nothing to report on.
-            let out = pending(&args_for("25", Some(USDC)));
-            assert!(out.trust_report.is_none());
+        fn pending_with_nothing_observed_reports_everything_false() {
+            let out = pending(&args_for("25", Some(USDC)), &[]);
+            let report = out.trust_report;
+            assert!(!report.recipient_verified);
+            assert_eq!(report.amount_status, AmountStatus::None);
+            assert!(!report.mint_verified);
+            assert_eq!(report.reference_verified, None);
+            assert!(!report.tx_confirmed);
+        }
+
+        #[test]
+        fn pending_with_an_underpayment_reports_amount_under_but_everything_else_true() {
+            let mut args = args_for("25", Some(USDC));
+            args.reference = Some(REFERENCE.to_string());
+            // A transfer for the right mint+reference landed, but short of
+            // the requested 25 -- this is why match_payment didn't match it
+            // (and so pending() is what ran at all).
+            let observed = [spl_transfer(10_000_000)];
+            let out = pending(&args, &observed);
+            let report = out.trust_report;
+            assert!(report.recipient_verified);
+            assert_eq!(report.amount_status, AmountStatus::Under);
+            assert!(report.mint_verified);
+            assert_eq!(report.reference_verified, Some(true));
+            assert!(!report.tx_confirmed);
+        }
+
+        #[test]
+        fn pending_with_an_unrelated_transfer_reports_recipient_true_but_mint_false() {
+            // Something arrived at this recipient, but in a different mint
+            // -- e.g. an unrelated payment. Must not be mistaken for
+            // progress on this invoice.
+            let mut other_mint_transfer = spl_transfer(25_000_000);
+            other_mint_transfer.mint = Some("So11111111111111111111111111111111111111112".to_string());
+            let out = pending(&args_for("25", Some(USDC)), &[other_mint_transfer]);
+            let report = out.trust_report;
+            assert!(report.recipient_verified);
+            assert_eq!(report.amount_status, AmountStatus::None);
+            assert!(!report.mint_verified);
+            assert_eq!(report.reference_verified, None);
         }
 
         /// The safety-critical case: a payment lands, but in a token with a
@@ -776,7 +946,7 @@ pub mod core {
         fn pending_never_carries_a_brl_estimate() {
             // Nothing has landed yet -- there is no confirmed amount to
             // convert, regardless of whether a rate is configured.
-            let out = pending(&args_for("25", Some(USDC)));
+            let out = pending(&args_for("25", Some(USDC)), &[]);
             assert!(out.brl_estimate.is_none());
         }
 
@@ -789,9 +959,122 @@ pub mod core {
             let observed: [ObservedTransfer; 0] = [];
             let matched = match_payment(&args_for("25", Some(USDC)), &observed).unwrap();
             assert_eq!(matched, None);
-            let out = pending(&args_for("25", Some(USDC)));
+            let out = pending(&args_for("25", Some(USDC)), &observed);
             assert_eq!(out.status, "pending");
             assert!(out.risk_level.is_none());
+        }
+
+        // ---- format_reply ---------------------------------------------------
+
+        #[test]
+        fn reply_green_case_exact_text() {
+            let observed = spl_transfer(25_000_000);
+            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let mut args = args_for("25", Some(USDC));
+            args.reference = Some(REFERENCE.to_string());
+            let out = confirm(&args, &observed, &facts, None);
+            let expected = "Payment Verification\n\
+                 ✓ Amount matches\n\
+                 ✓ Recipient verified\n\
+                 ✓ Reference matches\n\
+                 ✓ Transaction confirmed\n\
+                 ✓ Token risk: GREEN — no red flags found in mint/freeze authority, holder concentration, or Token-2022 extensions\n\
+                 Verdict: PAYMENT VERIFIED — safe to trust.";
+            assert_eq!(out.reply, expected);
+        }
+
+        #[test]
+        fn reply_red_case_exact_text() {
+            let observed = spl_transfer(25_000_000);
+            let facts = MintFacts {
+                has_permanent_delegate: true,
+                freeze_authority_active: true,
+                ..Default::default()
+            };
+            let mut args = args_for("25", Some(USDC));
+            args.reference = Some(REFERENCE.to_string());
+            let out = confirm(&args, &observed, &facts, None);
+            let expected = "Payment Verification\n\
+                 ✓ Amount matches\n\
+                 ✓ Recipient verified\n\
+                 ✓ Reference matches\n\
+                 ✓ Transaction confirmed\n\
+                 ✗ Token risk: RED — a permanent delegate can move holder funds without consent; freeze authority is still active\n\
+                 Verdict: DO NOT TRUST THIS PAYMENT.";
+            assert_eq!(out.reply, expected);
+        }
+
+        /// The RED verdict must be just as prominent as GREEN -- same
+        /// number of lines, same checklist structure, not a quieter or
+        /// truncated version. This asserts that shape directly, on top of
+        /// the exact-text assertions above.
+        #[test]
+        fn red_reply_is_not_a_downgraded_green_reply() {
+            let observed = spl_transfer(25_000_000);
+            let green_facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let red_facts = MintFacts { has_permanent_delegate: true, ..Default::default() };
+            let args = args_for("25", Some(USDC));
+            let green = confirm(&args, &observed, &green_facts, None);
+            let red = confirm(&args, &observed, &red_facts, None);
+            assert_eq!(green.reply.lines().count(), red.reply.lines().count());
+            assert!(red.reply.starts_with("Payment Verification\n"));
+            assert!(red.reply.contains("Verdict: "));
+        }
+
+        #[test]
+        fn reply_amber_case_exact_text() {
+            let observed = spl_transfer(25_000_000);
+            let facts = MintFacts { mint_authority_active: true, ..Default::default() };
+            let args = args_for("25", Some(USDC));
+            let out = confirm(&args, &observed, &facts, None);
+            let expected = "Payment Verification\n\
+                 ✓ Amount matches\n\
+                 ✓ Recipient verified\n\
+                 ✓ Transaction confirmed\n\
+                 ✗ Token risk: AMBER — mint authority is still active, supply can be inflated\n\
+                 Verdict: PAYMENT LANDED but flagged AMBER — review before trusting.";
+            assert_eq!(out.reply, expected);
+        }
+
+        #[test]
+        fn reply_not_paid_case_nothing_observed_exact_text() {
+            let out = pending(&args_for("25", Some(USDC)), &[]);
+            let expected = "Payment Verification\n\
+                 ✗ Amount matches\n\
+                 ✗ Recipient verified\n\
+                 ✗ Transaction confirmed\n\
+                 Verdict: NOT CONFIRMED — do not treat this as paid.";
+            assert_eq!(out.reply, expected);
+        }
+
+        #[test]
+        fn reply_not_paid_case_underpayment_exact_text() {
+            let mut args = args_for("25", Some(USDC));
+            args.reference = Some(REFERENCE.to_string());
+            let observed = [spl_transfer(10_000_000)];
+            let out = pending(&args, &observed);
+            let expected = "Payment Verification\n\
+                 ✗ Amount matches (underpaid)\n\
+                 ✓ Recipient verified\n\
+                 ✓ Reference matches\n\
+                 ✗ Transaction confirmed\n\
+                 Verdict: NOT CONFIRMED — do not treat this as paid.";
+            assert_eq!(out.reply, expected);
+        }
+
+        /// No invented confidence score or numeric anywhere in any reply --
+        /// only the real checklist marks and the real green/amber/red word.
+        #[test]
+        fn reply_never_contains_a_percentage_or_score() {
+            let observed = spl_transfer(25_000_000);
+            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let paid = confirm(&args_for("25", Some(USDC)), &observed, &facts, None);
+            let not_paid = pending(&args_for("25", Some(USDC)), &[]);
+            for reply in [&paid.reply, &not_paid.reply] {
+                assert!(!reply.contains('%'));
+                assert!(!reply.to_lowercase().contains("confidence"));
+                assert!(!reply.to_lowercase().contains("score"));
+            }
         }
     }
 }
@@ -873,14 +1156,16 @@ mod component {
              mint), correlated by a Solana Pay reference. When a matching \
              transfer is found, it automatically screens the paying token for \
              scam risk before confirming. Read-only, never moves funds. Call \
-             it on a schedule (e.g. an SOP cron) to poll until paid. If \
-             `brl_estimate` is present on a \"paid\" result, show it alongside \
-             `amount` -- omit it entirely on \"pending\" or when absent, never \
-             invent a figure yourself. A \"paid\" result also carries a \
-             `trust_report` (recipient/amount/mint/reference, each individually \
-             verified against on-chain data) -- don't dump it into the chat \
-             reply by default, a short confirmation is enough, but surface it \
-             if the operator asks what exactly was checked."
+             it on a schedule (e.g. an SOP cron) to poll until paid. Send the \
+             result's `reply` field to the channel VERBATIM as your entire \
+             response -- it is already an exact checklist (amount/recipient/ \
+             reference/transaction, then the real risk verdict on \"paid\") \
+             built from the same fields `trust_report` exposes \
+             (`recipient_verified`, `amount_status`, `mint_verified`, \
+             `reference_verified`, `tx_confirmed`) plus `risk_level`. Do not \
+             paraphrase, reformat, summarize `reply`, or add your own \
+             confidence score or numeric estimate -- there isn't one, only \
+             the real green/amber/red verdict."
                 .to_string()
         }
 
@@ -1023,7 +1308,7 @@ mod component {
                 });
                 Ok(core::confirm(args, transfer, &facts, brl_rate))
             }
-            None => Ok(core::pending(args)),
+            None => Ok(core::pending(args, &observed)),
         }
     }
 

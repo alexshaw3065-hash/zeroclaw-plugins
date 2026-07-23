@@ -701,6 +701,69 @@ genuinely live afterward via an explicit diagnostic log line
 price times Frankfurter's real daily rate) -- not just a plausible-looking
 number.
 
+## 2026-07-23 addendum: deterministic reply formatting, not LLM-composed
+
+Both `solana-pay-request` and `payment-watch` now build the exact
+channel-ready reply text themselves, in `core::format_reply`, and return
+it as `output.reply`. The tool description tells the agent to send it
+**verbatim** -- no paraphrasing, no reformatting, no LLM-invented
+confidence score. This directly targets a real, repeated failure class
+seen earlier in this project: a weaker model mangling structured
+arguments (the Groq argument-shape bug), and markdown-hyperlink attempts
+that rendered as literal text instead of a link. Taking final-text
+composition out of the model's hands removes that whole class of bug --
+pure formatting over already-computed fields, no new decision logic.
+
+**`solana-pay-request`:** `reply` is
+`"Invoice Created\nInvoice: <reference>\nAmount: <amount> <symbol-or-mint>\nRecipient: <shortened>\n[IMAGE:<qr_url>]\nWaiting for payment..."`.
+A small, explicit `KNOWN_MINTS` table (USDC, USDT, SOL/WSOL) maps a mint
+to a symbol; anything else shows the raw address, never a guessed
+symbol. `reference` is shown in full (functional, gets pasted into
+`payment-watch`); `recipient` is shortened (display only, the QR/URL is
+the actual payment path). 5 exact-text tests.
+
+**`payment-watch`:** `TrustReport` was restructured to support this --
+`amount_verified: bool` became `amount_status: AmountStatus` (`Match` /
+`Under` / `None`), and a new `tx_confirmed: bool` was added. **Bigger
+change: `trust_report` is no longer `Option` -- it's now present on
+every result, "paid" or "pending"**, not just "paid". On "pending", a
+new pure function `diagnose_pending` re-inspects the same already-fetched
+`observed` transfer list `match_payment` looked at (no new RPC calls, no
+new safety logic) to report an honest best-effort diagnosis -- e.g. a
+transfer landed in the right mint+reference but under the requested
+amount shows `amount_status: "under"` instead of a bare "nothing yet".
+This diagnosis never feeds back into the paid/pending decision itself,
+only into what's displayed. `format_reply` builds the checklist:
+```
+Payment Verification
+✓/✗ Amount matches [(underpaid) if Under]
+✓/✗ Recipient verified
+✓/✗ Reference matches          <- only shown when reference_verified is Some(_)
+✓/✗ Transaction confirmed
+✓/✗ Token risk: GREEN/AMBER/RED — <real reasons from assess>   <- only on "paid"
+Verdict: <one of four fixed strings>
+```
+Verdicts: GREEN -> "PAYMENT VERIFIED — safe to trust."; RED -> "DO NOT
+TRUST THIS PAYMENT."; AMBER -> "PAYMENT LANDED but flagged AMBER —
+review before trusting." (AMBER wasn't in the user's original spec but
+follows the same shape -- `assess()` can definitely produce it, more so
+now that 5b's LP check adds another amber path); anything not "paid" ->
+"NOT CONFIRMED — do not treat this as paid." **Explicitly verified that
+RED is not a downgraded GREEN**: same line count, same checklist
+structure, only the verdict/reasons differ
+(`red_reply_is_not_a_downgraded_green_reply`). 7 exact-text tests total,
+plus one asserting no reply anywhere contains a %, "confidence", or
+"score" -- nothing invented, only real computed fields.
+
+Both READMEs updated with real formatted output in their worked
+examples; `payment-watch`'s README has the full GREEN/RED/AMBER/NOT
+CONFIRMED contrast side by side, since that contrast is this project's
+core safety story. 112 tests passing across all four crates
+(42 solana-core, 4 token-risk-check, 29 solana-pay-request,
+37 payment-watch); `wasm32-wasip2` release builds and
+`cargo clippy -D warnings` clean on host and wasm for both plugins
+touched.
+
 ## Commands
 
 Run per-crate (there is no root workspace — see "Vendoring" above):
