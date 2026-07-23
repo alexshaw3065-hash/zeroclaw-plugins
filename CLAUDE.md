@@ -516,6 +516,59 @@ case closely matches the sponsors' own example already. (Full detail:
 already "in progress" from before — it's the single highest-leverage
 open gap. Do not skip to steps 5+ before 1-4 are confirmed.
 
+**Step 2 — CONFIRMED, 2026-07-23:**
+- **BRL-equivalent display:** done, both plugins, live-tested (full
+  detail in "2026-07-22 addendum: the BRL touch" below). Nothing left
+  here.
+- **Dust/tiny-fake-payment rejection:** already correctly enforced,
+  not a gap. `match_payment` in `payment-watch/src/lib.rs` requires
+  *both* an exact mint match and `amount_raw >= expected_raw` (computed
+  via `decimal_to_raw` on the real mint decimals) — a dust transfer
+  (any amount below what was requested) cannot satisfy a real invoice.
+  This was previously only proven incidentally by generic tests
+  (`underpayment_does_not_match`, `wrong_mint_does_not_match`); added a
+  new test named for this specific threat framing,
+  `a_dust_transfer_does_not_satisfy_a_real_invoice` (1 raw unit against
+  a 25 USDC invoice), so the coverage is explicit, not just inferred.
+  20/20 `payment-watch` tests pass.
+- **A more important related gap found while checking this (not what
+  was asked, but the real risk hiding next to it):** `match_payment`
+  has no way to verify a matched transfer against the specific
+  `reference` the invoice actually requested — it only uses `reference`
+  (when present) to pick which address `getSignaturesForAddress`
+  queries against; once a candidate transaction is fetched, matching is
+  purely `mint` + `amount >= expected`, checked against *any* transfer
+  the recipient received in that transaction. Two consequences: (1) if
+  the calling agent omits `reference` (nothing currently forces it not
+  to — `solana-pay-request` treats it as fully optional and never
+  generates one itself), `payment-watch` falls back to querying by
+  `recipient` directly, so two concurrently open invoices for the same
+  recipient/mint could cross-match — a second customer's unrelated
+  overpayment could satisfy a different invoice's "paid" check; (2)
+  even when a `reference` *is* supplied, nothing stops the LLM from
+  reusing a well-known address (this happened in the original live
+  verification run, which used the WSOL mint address as a stand-in
+  reference) instead of a fresh, single-use random value, defeating the
+  correlation's purpose. This is a real hardening target for `THE
+  ROADMAP` step 5 (5a: have `solana-pay-request` auto-generate a
+  cryptographically random reference by default when the caller omits
+  one, using `getrandom` — already a proven pattern in this repo, see
+  `plugins/wecom-ws/src/lib.rs`'s `random_id()`, so no new/unproven
+  wasm capability is needed; 5c: have `payment-watch` additionally
+  verify the matched transaction's account keys actually contain the
+  expected `reference`, as defense in depth, not just trust in the
+  query filter). Not fixed yet — this is the plan for step 5, tracked
+  there.
+
+**Step 3 — CONFIRMED, 2026-07-23:** QR-image support for
+`solana-pay-request` landed correctly and is solid: `qr_url` field
+built via goQR.me, covered by
+`core::tests::qr_url_embeds_the_percent_encoded_pay_url`, and
+independently confirmed live on Telegram (a real scannable QR image
+rendered via the `[IMAGE:<qr_url>]` marker) — full detail in "2026-07-22
+addendum: QR code output" below. 17/17 `solana-pay-request` tests pass.
+Nothing left here.
+
 ## 2026-07-22 addendum: QR code output + a real redaction bug fix
 
 - `solana-pay-request` now also returns `qr_url`: a QR-code image of the
@@ -649,6 +702,53 @@ Run per-crate (there is no root workspace — see "Vendoring" above):
 - **RPC key/URL only via config, never hardcoded.**
 - **`wit/v0` is experimental, no `.frozen` marker** — the ABI can move;
   pin assumptions, expect a rebuild.
+
+## Draft write-up paragraphs (for THE ROADMAP step 7 to paste in as-is)
+
+### wasm32-wasip2 and the Solana Rust SDK
+
+Rewritten 2026-07-23 against the bounty brief's own verified Tier 3
+guidance — replaces any earlier "avoid the official SDK entirely"
+framing, which was broader than the facts support. Ready to paste into
+the showcase write-up's build-details section:
+
+> None of the three plugins in this submission construct or serialize a
+> raw Solana transaction — `token-risk-check` and `payment-watch` are
+> both read-only (RPC calls only), and `solana-pay-request` builds a
+> Solana Pay `solana:...` URL, which is plain string formatting, not a
+> transaction. So the actual wasm32-wasip2 surface we needed was
+> narrower than "the Solana SDK": base58 address parsing, JSON-RPC
+> request/response handling, and Token / Token-2022 mint account TLV
+> parsing — all hand-rolled in `solana-core`, verified against real
+> devnet data, and requiring no Solana crate dependency at all. Network
+> transport goes over `waki` (blocking `wasi:http`) + `serde_json`, not
+> `solana-client`, whose transport layer assumes real sockets a wasm
+> component doesn't have — this part isn't a stopgap, it's the correct
+> shape for this host regardless of SDK choice.
+>
+> We initially assumed the official Solana Rust SDK was unusable for
+> wasm32-wasip2 across the board and planned entirely around hand-rolled
+> encoding as a result. That framing turned out to be broader than
+> reality: the bounty's own updated guidance (verified by the sponsors
+> via an actual build, not just a claim) is that the *modular* crates —
+> `solana-pubkey`, `solana-instruction`, `solana-message`,
+> `solana-transaction`, `solana-hash`, plus `borsh` and `bs58` — compile
+> clean to wasm32-wasip2 on the stock toolchain, and even `solana-sdk`
+> itself compiles for wasip2 now. The crates that still don't work are
+> the browser-targeted ones (`wasm_client_solana`, `solana-client-wasm`),
+> which depend on JS glue that has no wasip2 equivalent. We didn't end
+> up needing any of this for the three plugins actually shipped here —
+> nothing in this submission builds a transaction — but it's real,
+> useful next-step territory: if we build `spl-transfer-build` (a T1
+> unsigned-transaction builder with durable-nonce support, our stretch
+> goal after this submission), the modular crates are the right starting
+> point over further hand-rolled byte encoding. One honest caveat we're
+> flagging rather than glossing over: this guidance is verified as a
+> *library* compile target, not yet exercised as an instantiated
+> component inside the ZeroClaw host specifically, whose WASI capability
+> grants are narrower than a generic wasm32-wasip2 target — we'd budget
+> time for surprises at that specific boundary before assuming it just
+> works end to end.
 
 ## Where the fuller story lives
 

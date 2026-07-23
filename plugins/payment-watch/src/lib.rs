@@ -534,6 +534,20 @@ pub mod core {
             assert_eq!(match_payment(&args_for("25", Some(other)), &observed).unwrap(), None);
         }
 
+        /// Dust-defense: a near-zero decoy transfer in the right mint (the
+        /// classic "dust" pattern -- send a tiny amount so a naive
+        /// "any transfer in this mint = paid" watcher lights up green)
+        /// must not satisfy a real invoice. Named separately from
+        /// `underpayment_does_not_match` to document this as a specific,
+        /// deliberately-covered threat, not just an incidental side effect
+        /// of the amount check.
+        #[test]
+        fn a_dust_transfer_does_not_satisfy_a_real_invoice() {
+            // 1 raw base unit (0.000001 USDC) against a 25 USDC invoice.
+            let observed = [spl_transfer(1)];
+            assert_eq!(match_payment(&args_for("25", Some(USDC)), &observed).unwrap(), None);
+        }
+
         #[test]
         fn spl_payment_does_not_satisfy_a_native_sol_request() {
             let observed = [spl_transfer(25_000_000)];
