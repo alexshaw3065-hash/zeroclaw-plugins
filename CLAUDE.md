@@ -826,6 +826,69 @@ genuinely live afterward via an explicit diagnostic log line
 price times Frankfurter's real daily rate) -- not just a plausible-looking
 number.
 
+## 2026-07-23 addendum: the QR-image marker had to move out of `reply` -- a real ZeroClaw platform interception, root-caused live
+
+After the reply-formatting redesign, live Telegram testing of a fresh
+`solana-pay-request` charge showed the QR line rendering as the literal
+text `[media attachment]` instead of an image. Root-caused by reading
+ZeroClaw's own runtime source and tracing one real request end to end
+(not guessed):
+
+1. **First theory, disproven:** maybe `xai.default`/grok-4.5 just wasn't
+   marked vision-capable in ZeroClaw's provider catalog (confirmed true
+   -- `XaiModelProviderConfig` in `crates/zeroclaw-providers/src/factory.rs`
+   never called `.vision(true)`, unlike GLM/NVIDIA NIM which do). Patched
+   it to match that existing pattern (Grok's real API does support image
+   input) and rebuilt the whole ZeroClaw daemon from the
+   `C:\Users\User\Desktop\plugin\zeroclaw` checkout
+   (`cargo build --release --features plugins-wasm,plugins-wasm-cranelift`,
+   deployed to `~/.zeroclaw-src/bin/zeroclaw.exe`). This is a real,
+   accurate, harmless fix worth keeping (left in place), but it did not
+   fix the actual bug -- it just changed the failure mode from a visible
+   placeholder (`[media attachment]`) to a silent drop (blank line,
+   `error_kind:"remote_fetch_disabled"` in the log, since
+   `multimodal.allow_remote_fetch` defaults to `false`).
+2. **Real root cause, confirmed by reading the source:**
+   `is_tool_result_carrier` in `crates/zeroclaw-providers/src/multimodal.rs`
+   treats *any* message with `role: "tool"` as fair game for image-marker
+   processing, and `stripped_image_marker_text` unconditionally removes
+   the marker from that message's text -- whether the image successfully
+   loads or not. A tool's own JSON output *is* a `role: "tool"` message.
+   Since the redesigned `reply` embedded `[IMAGE:<qr_url>]` directly
+   inside the tool's own JSON, it was always going to be stripped before
+   the agent's next completion ever saw it, regardless of vision or
+   remote-fetch settings -- there is no config that changes this. The
+   original, pre-reply-field design worked precisely because the *model*
+   used to compose the whole message itself, including the marker, in
+   its own `assistant`-role text -- never a `role: "tool"` message, so
+   never subject to this interception at all.
+3. **Fix:** removed the `[IMAGE:...]` marker from `core::format_reply`
+   entirely; the tool description now instructs the agent to send
+   `reply` verbatim and then append exactly one more line,
+   `[IMAGE:<qr_url>]`, itself -- the one piece of the message that must
+   be agent-composed to land in the right message role. Also added back
+   the plain `solana:` pay URL as a real fallback line inside `reply`
+   itself (`Pay URL: <url>`) per explicit instruction -- ordinary text
+   has no marker-interception problem, so it's a genuine, always-present
+   fallback if a wallet can't scan or a client can't render the image.
+   New test `reply_never_embeds_an_image_marker_itself` locks this in
+   (a regression back to embedding the marker would be a real bug, not
+   an improvement). 32/32 `solana-pay-request` tests pass; `clippy -D
+   warnings` clean; wasm32-wasip2 build succeeds. Verified the QR
+   service itself was never the problem: `curl -I` against the exact
+   failing invoice's `qr_url` returned a real `200 OK image/png`.
+   Redeployed via the established safe pattern (copy fresh `.wasm`
+   directly into `~/.zeroclaw/plugins/<name>/`, restart the daemon --
+   never `plugin remove`+`install`, which wipes `plugins.entries`
+   config).
+
+**Why this matters beyond this one bug:** any future plugin (or SOP)
+that wants to return an image marker as part of a tool's own JSON result
+will hit this exact same interception in this ZeroClaw version. The only
+way for an image marker to survive to the channel is for the *agent* to
+type it into its own final message -- never pre-baked into a tool
+result, no matter how the multimodal/vision config is set.
+
 ## 2026-07-23 addendum: a real Solana Pay spec-compliance bug, found while re-checking the QR-scan report
 
 Earlier in this project, a live Telegram test found that a wallet scanned

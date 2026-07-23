@@ -255,14 +255,31 @@ pub mod core {
     /// function stays total over `Option` since it's called from pure,
     /// host-tested `core` and must handle being tested directly with a
     /// `None` reference too.
+    ///
+    /// Deliberately does **not** embed a `[IMAGE:...]` marker here, even
+    /// though `qr_url` is right there -- confirmed live (2026-07-23)
+    /// against a real ZeroClaw daemon that any `[IMAGE:...]`-shaped marker
+    /// inside a tool's own JSON result gets intercepted and stripped by
+    /// the runtime's multimodal pipeline (`is_tool_result_carrier` in
+    /// `zeroclaw-providers/src/multimodal.rs` treats any `role: "tool"`
+    /// message as fair game for image-marker processing) before the agent
+    /// ever sees it, regardless of vision/remote-fetch settings -- the
+    /// marker text is unconditionally stripped
+    /// (`stripped_image_marker_text`) whether the image loads or not. The
+    /// tool description instructs the agent to append the marker itself,
+    /// in its own reply, which lands in an `assistant`-role message and
+    /// is never subject to this interception. `url` (the plain `solana:`
+    /// URI) has no such problem -- it's just text -- so it's included
+    /// directly here as a real fallback: a wallet or QR reader that can't
+    /// render/scan the image still gets something to tap or copy.
     fn format_reply(output: &Output) -> String {
         let reference = output.reference.as_deref().unwrap_or("(none)");
         format!(
-            "Invoice Created\nInvoice: {reference}\nAmount: {} {}\nRecipient: {}\n[IMAGE:{}]\nWaiting for payment...",
+            "Invoice Created\nInvoice: {reference}\nAmount: {} {}\nRecipient: {}\nPay URL: {}\nWaiting for payment...",
             output.amount,
             asset_label(&output.mint),
             short_addr(&output.recipient),
-            output.qr_url,
+            output.url,
         )
     }
 
@@ -643,7 +660,7 @@ pub mod core {
         // ---- format_reply --------------------------------------------------
 
         #[test]
-        fn reply_shows_a_known_mint_symbol_and_the_qr_marker() {
+        fn reply_shows_a_known_mint_symbol_and_the_pay_url() {
             let args = Args {
                 mint: Some("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()),
                 reference: Some(WSOL_MINT.to_string()),
@@ -655,11 +672,31 @@ pub mod core {
                  Invoice: {WSOL_MINT}\n\
                  Amount: 25 USDC\n\
                  Recipient: 1111…1111\n\
-                 [IMAGE:{}]\n\
+                 Pay URL: {}\n\
                  Waiting for payment...",
-                output.qr_url,
+                output.url,
             );
             assert_eq!(output.reply, expected);
+        }
+
+        /// Locks in a real, confirmed platform finding (2026-07-23): any
+        /// `[IMAGE:...]`-shaped marker inside a tool's own JSON result gets
+        /// silently stripped by ZeroClaw's multimodal pipeline before the
+        /// agent ever sees it (`is_tool_result_carrier` in
+        /// `zeroclaw-providers/src/multimodal.rs` treats every tool-role
+        /// message as fair game, and the marker text is unconditionally
+        /// removed whether the image loads or not). Embedding the marker in
+        /// `reply` would therefore never actually render -- the tool
+        /// description instead has the agent append it in its own
+        /// assistant-role reply, which isn't subject to this interception.
+        /// If this test ever fails because someone re-added the marker to
+        /// `format_reply`, that's a regression back to a marker that can
+        /// never work, not an improvement.
+        #[test]
+        fn reply_never_embeds_an_image_marker_itself() {
+            let output = run(&base_args(), None, &Guardrails::default()).unwrap();
+            assert!(!output.reply.contains("[IMAGE:"));
+            assert!(output.reply.contains("Pay URL: "));
         }
 
         #[test]
@@ -778,15 +815,21 @@ mod component {
              Never signs or moves funds -- returns a request only, which a \
              human pays from their own wallet by scanning the QR or opening \
              the URL. Send the result's `reply` field to the channel \
-             VERBATIM as your entire response -- it is already exactly \
-             formatted (invoice summary + the `[IMAGE:...]` QR marker), \
-             including correct handling of `solana:` links (most chat \
-             clients, including Telegram, won't render that scheme as \
-             clickable even via markdown, so `reply` never tries to). Do \
-             not paraphrase it, reformat it, summarize it, or add your own \
-             text before/after it. Don't invent a `reference` yourself \
-             either -- omit the parameter and one is generated securely for \
-             you; `reply` already shows the real one."
+             VERBATIM, THEN append exactly one more line: `[IMAGE:<qr_url>]` \
+             using the `qr_url` field's exact value -- do not paraphrase, \
+             reformat, summarize, or add any other text before/after `reply`, \
+             this one line is the only thing you add yourself. It must be \
+             added by you, in your own reply, rather than embedded in \
+             `reply` directly: a real, confirmed platform behavior strips \
+             any `[IMAGE:...]`-shaped marker found inside a tool's own \
+             result before you ever see it, so putting it in `reply` itself \
+             would silently never render. `reply` already includes the \
+             plain `solana:` pay URL as a fallback (most chat clients, \
+             including Telegram, won't render that scheme as clickable even \
+             via markdown, so it's shown as plain text on purpose, not a \
+             broken link). Don't invent a `reference` yourself either -- \
+             omit the parameter and one is generated securely for you; \
+             `reply` already shows the real one."
                 .to_string()
         }
 

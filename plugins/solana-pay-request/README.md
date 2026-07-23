@@ -161,9 +161,14 @@ Response:
   "memo": "Invoice #412 (table 4)",
   "reference": "So11111111111111111111111111111111111111112",
   "brl_estimate": "R$140.00",
-  "reply": "Invoice Created\nInvoice: So11111111111111111111111111111111111111112\nAmount: 25 SOL\nRecipient: 1111…1111\n[IMAGE:https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=...]\nWaiting for payment..."
+  "reply": "Invoice Created\nInvoice: So11111111111111111111111111111111111111112\nAmount: 25 SOL\nRecipient: 1111…1111\nPay URL: solana:11111111111111111111111111111111?amount=25&spl-token=So11111111111111111111111111111111111111112&reference=So11111111111111111111111111111111111111112&memo=Invoice%20%23412%20%28table%204%29\nWaiting for payment..."
 }
 ```
+
+The full message the operator actually sees in a channel like Telegram is
+`reply` **plus one more line the agent appends itself**:
+`[IMAGE:<qr_url>]`. See "Reply formatting" below for why that marker
+can't just live inside `reply` alongside everything else.
 
 `output.url` is the QR-ready payload for wallets that support pasting a
 raw payment link; `output.qr_url` is that same URL pre-rendered as a
@@ -183,7 +188,7 @@ Invoice Created
 Invoice: So11111111111111111111111111111111111111112
 Amount: 25 SOL
 Recipient: 1111…1111
-[IMAGE:https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=...]
+Pay URL: solana:11111111111111111111111111111111?amount=25&spl-token=So11111111111111111111111111111111111111112&reference=So11111111111111111111111111111111111111112&memo=Invoice%20%23412%20%28table%204%29
 Waiting for payment...
 ```
 
@@ -202,16 +207,38 @@ hands removes that whole class of bug. Specifics:
 - **Recipient** is shortened (`head…tail`) -- display only, since the
   actual payment path is the QR/URL, not this address needing to be
   read character-by-character.
-- The `[IMAGE:...]` marker is the same mechanism already confirmed
-  working live on Telegram (see "What's built" below) -- embedding it in
-  `reply` instead of leaving the model to add it works identically, since
-  the channel strips the marker from whatever final text it receives.
+- **Pay URL** is the plain `solana:` URI, shown as-is (not a markdown
+  link -- most chat clients, including Telegram, won't render that
+  scheme as clickable even via markdown). A real, tap-or-copy fallback
+  alongside the QR image, for a wallet that can't scan or a client that
+  can't render the image.
 - Host-tested for exact output text:
-  `reply_shows_a_known_mint_symbol_and_the_qr_marker`,
+  `reply_shows_a_known_mint_symbol_and_the_pay_url`,
   `reply_shows_sol_for_a_native_request`,
   `reply_shows_the_raw_address_for_an_unknown_mint`,
   `reply_shortens_the_recipient_but_not_the_reference`,
-  `reply_never_invents_a_reference_when_none_was_given`.
+  `reply_never_invents_a_reference_when_none_was_given`,
+  `reply_never_embeds_an_image_marker_itself`.
+
+**The `[IMAGE:<qr_url>]` marker is deliberately *not* inside `reply`.**
+An earlier version embedded it directly in `reply`, on the theory that
+the channel would strip it and render a photo the same way it does for
+model-composed text. Confirmed live against a real ZeroClaw daemon
+(2026-07-23) that this doesn't hold: `is_tool_result_carrier` in
+ZeroClaw's own `zeroclaw-providers/src/multimodal.rs` treats *any*
+message with `role: "tool"` as fair game for image-marker processing,
+and unconditionally strips the marker text (`stripped_image_marker_text`)
+whether the image loads or not -- before the agent's next completion
+ever sees it. A tool's own JSON result is exactly a `role: "tool"`
+message, so a marker embedded in `reply` is stripped before the model
+can ever relay it, regardless of vision or remote-fetch settings. The
+tool description now instructs the agent to append `[IMAGE:<qr_url>]`
+itself, in its own reply -- that lands in an `assistant`-role message,
+which isn't subject to this interception, exactly how it worked before
+this plugin ever had a `reply` field at all (the model used to compose
+the whole message itself, marker included). This is the one line the
+agent still composes; everything else in `reply` stays fully
+deterministic.
 
 ## What's built vs. what's left
 
@@ -228,8 +255,12 @@ hands removes that whole class of bug. Specifics:
       No network permission needed — `execute` never leaves the sandbox.
 - [x] QR code image (`qr_url`) alongside the raw `url`, sent as a real
       inline photo via `[IMAGE:<qr_url>]` -- confirmed working live on
-      Telegram (2026-07-22): an actual scannable QR image arrived, not
-      just a link.
+      Telegram (2026-07-22), back when the model composed the whole
+      reply itself and added the marker in its own text. Re-confirmed
+      the mechanism still works that way, and found *why* an interim
+      attempt to embed the marker directly in `reply` didn't (2026-07-23)
+      -- see "Reply formatting" above for the real, sourced explanation
+      (`is_tool_result_carrier` in ZeroClaw's own multimodal pipeline).
 - [x] BRL-equivalent display alongside the crypto amount (`brl_estimate`,
       via an operator-configured `brl_rate` -- see root README's Brazil
       touch note). Hybrid: live price (Jupiter + Frankfurter, both free,
