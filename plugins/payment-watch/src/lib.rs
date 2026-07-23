@@ -560,9 +560,21 @@ pub mod core {
 
         if output.status == "paid" {
             let level = output.risk_level.as_deref().unwrap_or("unknown");
-            let mark = if level == "green" { "\u{2713}" } else { "\u{2717}" };
+            // A colored circle here, not the ✓/✗ every other line uses --
+            // green/amber/red is a genuine three-way severity signal, and
+            // collapsing amber into the same ✗ as red (as a checkmark
+            // would) loses real information a color doesn't.
+            let circle = match level {
+                "green" => "\u{1F7E2}", // 🟢
+                "amber" => "\u{1F7E0}", // 🟠
+                "red" => "\u{1F534}",   // 🔴
+                // Defensive only: a "paid" result always carries a real
+                // risk_level by construction (see the module doc comment
+                // on the fusion) -- this arm should be unreachable.
+                _ => "\u{26AA}", // ⚪
+            };
             lines.push(format!(
-                "{mark} Token risk: {} — {}",
+                "{circle} Token risk: {} — {}",
                 level.to_uppercase(),
                 output.risk_reasons.join("; "),
             ));
@@ -978,7 +990,7 @@ pub mod core {
                  ✓ Recipient verified\n\
                  ✓ Reference matches\n\
                  ✓ Transaction confirmed\n\
-                 ✓ Token risk: GREEN — no red flags found in mint/freeze authority, holder concentration, or Token-2022 extensions\n\
+                 🟢 Token risk: GREEN — no red flags found in mint/freeze authority, holder concentration, or Token-2022 extensions\n\
                  Verdict: PAYMENT VERIFIED — safe to trust.";
             assert_eq!(out.reply, expected);
         }
@@ -999,7 +1011,7 @@ pub mod core {
                  ✓ Recipient verified\n\
                  ✓ Reference matches\n\
                  ✓ Transaction confirmed\n\
-                 ✗ Token risk: RED — a permanent delegate can move holder funds without consent; freeze authority is still active\n\
+                 🔴 Token risk: RED — a permanent delegate can move holder funds without consent; freeze authority is still active\n\
                  Verdict: DO NOT TRUST THIS PAYMENT.";
             assert_eq!(out.reply, expected);
         }
@@ -1031,7 +1043,7 @@ pub mod core {
                  ✓ Amount matches\n\
                  ✓ Recipient verified\n\
                  ✓ Transaction confirmed\n\
-                 ✗ Token risk: AMBER — mint authority is still active, supply can be inflated\n\
+                 🟠 Token risk: AMBER — mint authority is still active, supply can be inflated\n\
                  Verdict: PAYMENT LANDED but flagged AMBER — review before trusting.";
             assert_eq!(out.reply, expected);
         }

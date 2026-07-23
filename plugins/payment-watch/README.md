@@ -199,7 +199,7 @@ Response once it lands in a clean token:
     "reference_verified": true,
     "tx_confirmed": true
   },
-  "reply": "Payment Verification\n✓ Amount matches\n✓ Recipient verified\n✓ Reference matches\n✓ Transaction confirmed\n✓ Token risk: GREEN — no red flags found in mint/freeze authority, holder concentration, or Token-2022 extensions\nVerdict: PAYMENT VERIFIED — safe to trust."
+  "reply": "Payment Verification\n✓ Amount matches\n✓ Recipient verified\n✓ Reference matches\n✓ Transaction confirmed\n🟢 Token risk: GREEN — no red flags found in mint/freeze authority, holder concentration, or Token-2022 extensions\nVerdict: PAYMENT VERIFIED — safe to trust."
 }
 ```
 `brl_estimate` is absent entirely without `brl_rate` configured, and never
@@ -218,7 +218,11 @@ send **verbatim**, built by `core::format_reply` from `trust_report` plus
 the real risk verdict — not composed by the LLM, and never an invented
 confidence score or percentage. This is deliberately the same visual
 weight and structure whether the news is good or bad — RED is not a
-quieter or truncated GREEN:
+quieter or truncated GREEN. The four payment-mechanics lines use plain
+`✓`/`✗` (a real boolean each); the risk line uses a colored circle
+(`🟢`/`🟠`/`🔴`) instead — green/amber/red is a genuine three-way
+severity signal, and collapsing amber into the same `✗` a checkmark would
+give it loses real information a color doesn't:
 
 **GREEN** (clean mint, `risk_level: "green"`):
 ```
@@ -227,7 +231,7 @@ Payment Verification
 ✓ Recipient verified
 ✓ Reference matches
 ✓ Transaction confirmed
-✓ Token risk: GREEN — no red flags found in mint/freeze authority, holder concentration, or Token-2022 extensions
+🟢 Token risk: GREEN — no red flags found in mint/freeze authority, holder concentration, or Token-2022 extensions
 Verdict: PAYMENT VERIFIED — safe to trust.
 ```
 
@@ -241,7 +245,7 @@ Payment Verification
 ✓ Recipient verified
 ✓ Reference matches
 ✓ Transaction confirmed
-✗ Token risk: RED — a permanent delegate can move holder funds without consent; freeze authority is still active
+🔴 Token risk: RED — a permanent delegate can move holder funds without consent; freeze authority is still active
 Verdict: DO NOT TRUST THIS PAYMENT.
 ```
 
@@ -272,7 +276,7 @@ same transfer list `match_payment` already looked at, and never feeds
 back into the paid/pending decision itself. An AMBER verdict (e.g. active
 mint authority, or a thin/missing liquidity pool if `token-risk-check`'s
 LP check is ever wired in here) follows the same checklist shape with
-`✗ Token risk: AMBER — <reason>` and `Verdict: PAYMENT LANDED but flagged
+`🟠 Token risk: AMBER — <reason>` and `Verdict: PAYMENT LANDED but flagged
 AMBER — review before trusting.` (test: `reply_amber_case_exact_text`).
 
 ## What's built vs. what's left
