@@ -39,6 +39,33 @@ instruction, not a preference.
   wrong risk/time tradeoff against a proven, nearly-finished submission.
   This is a considered decision, not an oversight — do not revisit
   without a major runway change.
+  **x402 feasibility check (2026-07-23), for if that changes:** confirmed
+  against the real daemon source (`C:\Users\User\Desktop\plugin\zeroclaw`,
+  `wit/v0/tool.wit`, `docs/book/src/plugins/`), not guessed. Tool plugins
+  cannot receive inbound requests at all — `world tool-plugin` imports
+  only `logging`, no `inbound`, ever; they're invoked exclusively by the
+  agent's own LLM. Channel plugins do import `inbound` and are the only
+  capability with an inbound design at all, but per
+  `docs/book/src/plugins/index.md`'s wiring-status table and
+  `writing-a-channel-plugin.md` verbatim: "a channel plugin loads and
+  passes its contract tests but is **not yet constructed by a running
+  daemon**" — orchestrator registration and the per-vendor host listener
+  are the missing seam. So a plugin (tool or channel) cannot serve real
+  inbound traffic today, full stop — not a config issue, a genuine
+  platform gap, same category as the cron/SOP-autonomy finding already
+  logged above. The native `[channels.webhook]` channel (not a plugin)
+  *does* run a real embedded HTTP server today, but its shape is wrong
+  for x402 regardless: inbound POST must be `{sender, content,
+  thread_id}` (a chat message, not an API call), it returns `200 OK` on
+  ingestion before the agent does anything, and any reply goes out
+  *later* as a separate outbound POST to a configured `send_url` —
+  there's no path to return the tool's actual JSON output in the same
+  HTTP response. x402 needs a synchronous round trip (`402` + payment
+  requirements, then the real content on retry, same request/response).
+  **If x402 is ever revisited:** the correct shape is a small standalone
+  HTTP server *outside* ZeroClaw's plugin/channel model entirely, calling
+  `solana-core::risk::assess` directly (already pure, host-tested, zero
+  wasm dependency) — not a fourth plugin, and not the webhook channel.
 
 ## The official bounty brief — key facts (read 2026-07-23)
 
