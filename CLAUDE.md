@@ -826,6 +826,45 @@ genuinely live afterward via an explicit diagnostic log line
 price times Frankfurter's real daily rate) -- not just a plausible-looking
 number.
 
+## 2026-07-23 addendum: a real Solana Pay spec-compliance bug, found while re-checking the QR-scan report
+
+Earlier in this project, a live Telegram test found that a wallet scanned
+`solana-pay-request`'s QR code but didn't recognize/display the amount.
+At the time this was diagnosed as most likely a mainnet-only USDC mint
+address used in what should have been a devnet-context test (a testing-
+methodology issue, not a plugin bug) — a native-SOL isolation test was
+proposed to narrow it down but never confirmed completed.
+
+Revisited 2026-07-23 by reading the actual Solana Pay spec
+(`solana-labs/solana-pay`'s `spec/SPEC.md`, "Amount" section) rather than
+guessing further. Found a real, independent bug while there: the spec
+states plainly, "If the value is a decimal number less than 1, it must
+have a leading `0` before the `.`" — `is_valid_amount` in
+`plugins/solana-pay-request/src/lib.rs` didn't enforce this; it accepted
+`.5` as valid (missing the leading `0`), which is spec-invalid input. A
+wallet that validates strictly is entitled to reject a URL like that as
+malformed, which would present to a user exactly as "scanned fine, but
+the amount never showed up" — a second, previously-undiscovered
+candidate explanation for the original report, found by reading the
+actual spec instead of re-guessing. Fixed: `is_valid_amount` now tracks
+digits seen before the `.` and rejects a bare leading dot. Two new tests
+(`rejects_amount_missing_a_leading_zero_before_the_dot`,
+`accepts_amount_with_the_required_leading_zero`); 31/31
+`solana-pay-request` tests pass, `cargo clippy -D warnings` clean.
+
+**Not independently re-confirmed live** (would need a physical wallet
+app scanning a real QR code, which isn't something this session can do
+directly) — and the earlier mainnet/devnet mint-mismatch diagnosis is
+still a live, plausible, separate explanation, not ruled out by this
+fix. The existing `mint_allowlist` guardrail (5a, above) is the right
+operational mitigation for that specific failure mode: an operator
+running against devnet should set `mint_allowlist` to their real devnet
+test mints, which structurally prevents an agent from ever building a
+request against a mainnet-only mint by accident. **Whoever tests this
+next needs to rebuild and reinstall the wasm component first** — this
+fix is in source only; nothing currently installed in a running ZeroClaw
+instance has it yet.
+
 ## 2026-07-23 addendum: deterministic reply formatting, not LLM-composed
 
 Both `solana-pay-request` and `payment-watch` now build the exact

@@ -71,7 +71,13 @@ downstream URL parser.
   built.
 - `amount` is validated against a hand-rolled digits-and-one-dot check,
   not parsed as a float, so it can't be "0", negative, scientific
-  notation, or non-numeric.
+  notation, or non-numeric. This check also enforces the actual [Solana
+  Pay spec](https://github.com/solana-labs/solana-pay/blob/main/typescript/packages/solana-pay/spec/SPEC.md#amount)'s
+  own rule that a value under 1 must have a leading `0` before the `.`
+  (`.5` is spec-invalid, `0.5` is required) — found and fixed
+  2026-07-23 while investigating a wallet QR-scan report; a wallet is
+  entitled to reject a URL that skips this, which looks exactly like
+  "scanned fine, but the amount never showed up."
 - `memo` — the one genuinely free-text field — is percent-encoded before
   being embedded in the query string. A memo containing `&` or `=`
   cannot inject a second `recipient=` or `amount=` parameter; the

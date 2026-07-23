@@ -293,11 +293,27 @@ pub mod core {
         }
         let mut seen_dot = false;
         let mut seen_nonzero_digit = false;
+        let mut digits_before_dot = 0u32;
         for c in s.chars() {
             match c {
-                '0' => {}
-                '1'..='9' => seen_nonzero_digit = true,
-                '.' if !seen_dot => seen_dot = true,
+                '0' => {
+                    if !seen_dot {
+                        digits_before_dot += 1;
+                    }
+                }
+                '1'..='9' => {
+                    seen_nonzero_digit = true;
+                    if !seen_dot {
+                        digits_before_dot += 1;
+                    }
+                }
+                // The Solana Pay spec requires a leading "0" before "."
+                // for any value under 1 -- ".5" is not valid, "0.5" is
+                // (github.com/solana-labs/solana-pay spec, "Amount"
+                // section). A strict wallet may reject a URL that skips
+                // this, exactly the class of bug that would look like
+                // "scanned fine but the amount didn't show up."
+                '.' if !seen_dot && digits_before_dot > 0 => seen_dot = true,
                 _ => return false,
             }
         }
@@ -405,6 +421,24 @@ pub mod core {
                 amount: "0.000001".to_string(),
                 ..base_args()
             };
+            assert!(run(&args, None, &Guardrails::default()).is_ok());
+        }
+
+        /// The Solana Pay spec (github.com/solana-labs/solana-pay,
+        /// "Amount" section) requires a leading "0" before "." for any
+        /// value under 1 -- ".5" is spec-invalid, "0.5" is required. A
+        /// strict wallet is entitled to reject a URL that skips this,
+        /// which would look exactly like "scanned fine but the amount
+        /// never showed up."
+        #[test]
+        fn rejects_amount_missing_a_leading_zero_before_the_dot() {
+            let args = Args { amount: ".5".to_string(), ..base_args() };
+            assert!(run(&args, None, &Guardrails::default()).is_err());
+        }
+
+        #[test]
+        fn accepts_amount_with_the_required_leading_zero() {
+            let args = Args { amount: "0.5".to_string(), ..base_args() };
             assert!(run(&args, None, &Guardrails::default()).is_ok());
         }
 
