@@ -474,32 +474,84 @@ against the real ZeroClaw runtime. State this plainly, with this evidence,
 in the final write-up rather than glossing over it or claiming the cron
 demo works when it doesn't.
 
-**A real, promising lead found 2026-07-23, not yet tried -- come back to
-this.** The finding above is specifically about the **SOP engine's** cron
+## The top-level `cron` mechanism solves step 1 -- confirmed live, 2026-07-23
+
+The finding above is specifically about the **SOP engine's** cron
 trigger. There is a second, completely separate cron mechanism in
-ZeroClaw: the top-level `zeroclaw cron add <expr> "<prompt>" --agent
-<alias> --prompt` command (distinct from `zeroclaw sop`). Traced its
-execution path in the real source
-(`run_agent_job` in `crates/zeroclaw-runtime/src/cron/scheduler.rs`,
-`C:\Users\User\Desktop\plugin\zeroclaw`): it calls `crate::agent::run(...)`
-**directly** -- a genuine, tool-capable agent-loop turn, the same kind a
-live chat message gets, not the SOP engine's constrained step model. It
-also has a built-in `delivery.mode = "announce"` config (a `channel` +
-`to` target) specifically for pushing the agent's response to a channel
-like Telegram unprompted, plus a `NO_REPLY` sentinel convention the
-prompt can have the agent return to skip delivery when there's nothing
-new to report. This looks structurally sound for exactly what step 1
-needs (something that self-drives a real tool call and only speaks up
-when `payment-watch` actually reports "paid") -- **but it has not been
-live-tested yet.** Next step when picking this back up: something like
-`zeroclaw cron add "*/2 * * * *" "check whether the 0.5 SOL payment to
-<recipient> with reference <ref> has landed via payment-watch; if paid,
-report its reply verbatim; otherwise return NO_REPLY" --agent assistant
---prompt`, with delivery configured to announce to
-`telegram.default`/the owner, watched across a few real ticks the same
-way the original SOP finding was verified (not just assumed from the
-source read). Config/CLI-only if it works -- no plugin code changes
-needed.
+ZeroClaw: the top-level `zeroclaw cron` command (distinct from `zeroclaw
+sop`). Traced its execution path in the real source (`run_agent_job` in
+`crates/zeroclaw-runtime/src/cron/scheduler.rs`,
+`C:\Users\User\Desktop\plugin\zeroclaw`) before touching anything: it
+calls `crate::agent::run(...)` **directly** -- a genuine, tool-capable
+agent-loop turn, the same kind a live chat message gets, not the SOP
+engine's constrained step model. It also has a built-in `delivery.mode =
+"announce"` config (`channel` + `to` target) for pushing the agent's
+response to a channel like Telegram unprompted, plus a `NO_REPLY`
+sentinel convention the prompt can have the agent return to skip
+delivery when there's nothing new to report.
+
+**The CLI doesn't expose `delivery` at all** (checked `cron add --help`
+and `cron update --help` -- neither has a delivery/channel/announce
+flag). The real mechanism is the **gateway REST API**: `POST
+/api/cron` accepts a `delivery` object directly in the body (confirmed
+by a real round-trip test in `crates/zeroclaw-gateway/src/api.rs`,
+`cron_api_shell_roundtrip_includes_delivery`), and `PATCH
+/api/cron/{id}` can update fields (including `prompt`) on an existing
+job afterward. Requires pairing first (`POST /pair` with the daemon's
+printed one-time code) to get a bearer token.
+
+**Live-tested end to end, not just read from source:**
+1. Generated a real, genuinely-pending 0.05 SOL devnet invoice.
+2. `POST /api/cron` created a real agent-type job (`*/2 * * * *`,
+   `--agent assistant`, a prompt calling `payment-watch` with the
+   invoice's exact recipient/amount, `NO_REPLY` on pending), with
+   `delivery: {mode: "announce", channel: "telegram.default", to:
+   "<telegram id>"}`.
+3. First few real ticks (2-min interval) correctly found the invoice
+   still pending and returned the literal string `NO_REPLY` -- no
+   message sent, confirmed both in the trace and by nothing arriving in
+   Telegram. This alone proves the job wasn't just "running" -- it was
+   correctly *withholding* delivery too.
+4. The moment the invoice was actually paid (a real devnet transfer),
+   the very next scheduled tick -- fully unprompted, no chat message
+   sent -- called `payment-watch`, got `status: "paid"`, and the full
+   `reply` text (checklist + 🟢 GREEN verdict) landed in Telegram at the
+   exact timestamp the trace shows (`17:30:20Z` UTC, confirmed against
+   the daemon's own logged UTC timestamp, not wall-clock guesswork).
+   This is the literal thing step 1 asked for: an unprompted "payment
+   confirmed" message, no human asking first.
+
+**One real gotcha hit and fixed live:** the first attempt included a
+`reference` in the polling prompt, but the test payment was sent as a
+plain wallet transfer (no Solana Pay reference attached) -- so
+`payment-watch`'s reference-matching defense correctly refused to match
+it, exactly as designed. Not a bug; a reminder that the polling prompt's
+matching criteria must match how the actual payment will arrive.
+`PATCH /api/cron/{id}` fixed it live (dropped the reference requirement)
+without needing to recreate the job.
+
+**One real gap, not yet solved:** the job has no way to know it already
+delivered the "paid" announcement, so left running it re-announces the
+*same* confirmed payment on every subsequent tick forever -- confirmed
+live (got the identical GREEN message again 2 minutes later). Deleted
+the test job (`DELETE /api/cron/{id}`) rather than leave it spamming.
+`CronJob`/`CronJobPatch` has a `delete_after_run: bool` field that looks
+like the right building block for a production version, but its exact
+semantics (does it delete after *any* successful run, including a
+`NO_REPLY` one, or only when the agent actually delivers?) weren't
+checked -- worth confirming before relying on it for the real demo/SOP,
+so the job self-removes after the one real notification rather than
+needing a manual delete.
+
+**Bottom line for the write-up:** step 1's original finding stands
+correctly for the SOP engine specifically -- that mechanism genuinely
+cannot self-drive a tool call. But the platform *does* have a working
+autonomous-notification path; it's just a different, less-obvious
+subsystem (`zeroclaw cron` + the gateway REST API's `delivery` field,
+not `zeroclaw sop`'s cron trigger, and not exposed by the cron CLI at
+all). The honest, complete story is: ZeroClaw can do this, the SOP
+engine specifically can't yet, and the real mechanism needed one
+undocumented corner (the REST-only `delivery` field) to find.
 
 ## THE ROADMAP
 
@@ -517,16 +569,17 @@ case closely matches the sponsors' own example already. (Full detail:
 
 **The roadmap, in order:**
 
-1. **HIGHEST PRIORITY:** confirm whether `payment-watch`'s automatic SOP
-   cron trigger now actually completes end to end and posts an
-   unprompted "Invoice paid" message on its own, with no human asking
-   first — this is the single biggest gap against the sponsors' own
-   literal winning-showcase example. If it works, that's the headline
-   moment for the demo video. If it genuinely can't be made reliable in
-   reasonable time, document the honest reason in the write-up rather
-   than fake it, and keep the on-demand version as the proven fallback.
-   (Prior finding on this exact gap: "ZeroClaw daemon integration
-   findings" below — re-verify, don't just trust that log.)
+1. **HIGHEST PRIORITY -- SOLVED, 2026-07-23.** Confirmed live: an
+   unprompted "payment confirmed" message really can land in Telegram on
+   its own, with no human asking first. The earlier finding ("ZeroClaw
+   daemon integration findings" below) that this doesn't work was real
+   and correctly diagnosed -- but scoped to the wrong mechanism. Full
+   detail in the new addendum below ("the top-level `cron` mechanism
+   solves step 1"); short version: use `zeroclaw cron add/patch --agent
+   --prompt` with `delivery.mode="announce"` via the gateway REST API
+   (not `zeroclaw sop`'s cron trigger, which is confirmed still broken
+   for autonomy and is a different subsystem entirely). This is now the
+   headline moment for the demo video, proven, not staged.
 2. Confirm status of two open items from earlier: BRL-equivalent
    display, and whether `payment-watch`'s matching logic already
    rejects a dust/tiny fake payment.
