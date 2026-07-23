@@ -1042,6 +1042,33 @@ core safety story. 112 tests passing across all four crates
 `cargo clippy -D warnings` clean on host and wasm for both plugins
 touched.
 
+## 2026-07-23 addendum: `zeroclaw config set` on a plugin secret does not hot-reload -- restart the daemon
+
+Spent a long live-testing session chasing an `rpc error -32401: invalid
+api key provided` from `token-risk-check` that survived: re-entering the
+value via the masked prompt, re-entering it via `config set
+--no-interactive` (ruling out a paste/terminal artifact), rotating to a
+brand new Helius API key, and even creating an entirely new Helius
+account. None of that was the problem. Also chased a red herring:
+`curl.exe` invoked from PowerShell with a single-quoted JSON `-d` body
+consistently returned a generic `-32603 Method not found` regardless of
+which key/network was used -- that turned out to be a PowerShell-to-
+native-exe argument-flattening artifact (embedded double quotes getting
+mangled when handed to `curl.exe`), not a real RPC problem;
+`Invoke-RestMethod` (PowerShell's own HTTP cmdlet, which passes the body
+as a real object rather than a re-flattened command-line string)
+confirmed the original key was valid the whole time. **The actual fix:
+restart the daemon.** `zeroclaw config set` writes straight to
+`config.toml` on disk; the already-running daemon process has its own
+in-memory `Config` loaded once at startup and does not watch the file
+for changes (confirmed by grepping the real daemon source for a
+file-watcher/hot-reload mechanism -- there isn't one). Every `config
+set` during this session was writing a value the live daemon would
+never see until it restarted. Rule of thumb going forward: **any
+`plugins.entries.*.config` change requires stopping and restarting the
+daemon before it takes effect** -- don't spend time re-diagnosing the
+value itself first.
+
 ## Commands
 
 Run per-crate (there is no root workspace — see "Vendoring" above):
