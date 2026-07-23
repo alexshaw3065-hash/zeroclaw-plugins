@@ -109,6 +109,33 @@ pub fn account_data_from_result(result: &Value) -> Result<Vec<u8>, RpcError> {
         .map_err(|e| RpcError::Parse(format!("invalid base64 account data: {e}")))
 }
 
+/// Same as [`account_data_from_result`], but for callers where "this
+/// account doesn't exist yet" is a normal, expected outcome -- not a
+/// failure -- so a `null` value maps to `Ok(None)` instead of an error.
+/// An unregistered domain name (`sns-resolve`) is exactly this case: the
+/// derived address simply has no account yet, which is a valid answer
+/// ("unregistered"), not something that should fail the whole call the
+/// way a malformed or truncated response should.
+pub fn account_data_from_result_optional(result: &Value) -> Result<Option<Vec<u8>>, RpcError> {
+    let account = result
+        .get("value")
+        .ok_or_else(|| RpcError::Parse("missing 'value' field".into()))?;
+    if account.is_null() {
+        return Ok(None);
+    }
+    let encoded = account
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::Parse("missing base64 account data".into()))?;
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map(Some)
+        .map_err(|e| RpcError::Parse(format!("invalid base64 account data: {e}")))
+}
+
 /// The largest single balance among a decoded `getTokenLargestAccounts`
 /// `result` value's accounts, in raw (undecimalled) units. Deliberately
 /// takes the max rather than trusting response order, since the RPC spec
@@ -212,6 +239,27 @@ mod tests {
     fn account_data_from_result_fails_closed_on_malformed_shape() {
         let result = json!({"value": {"nope": true}});
         assert!(account_data_from_result(&result).is_err());
+    }
+
+    #[test]
+    fn account_data_from_result_optional_returns_none_for_a_missing_account() {
+        let result = json!({"value": null});
+        assert_eq!(account_data_from_result_optional(&result).unwrap(), None);
+    }
+
+    #[test]
+    fn account_data_from_result_optional_decodes_base64_when_present() {
+        let result = json!({"value": {"data": ["aGk=", "base64"], "owner": "x"}});
+        let data = account_data_from_result_optional(&result).unwrap();
+        assert_eq!(data, Some(b"hi".to_vec()));
+    }
+
+    #[test]
+    fn account_data_from_result_optional_still_fails_closed_on_malformed_shape() {
+        // Not-null but missing the data field entirely is a genuinely
+        // broken response, not "doesn't exist" -- must still error.
+        let result = json!({"value": {"nope": true}});
+        assert!(account_data_from_result_optional(&result).is_err());
     }
 
     #[test]

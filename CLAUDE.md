@@ -580,13 +580,13 @@ case closely matches the sponsors' own example already. (Full detail:
    `depin-attest` (software-only sensor input, no hardware required) →
    "AI negotiates a swap" idea, sequenced after `spl-transfer-build`,
    T1-only with guardrails from line one.
-   **`sns-resolve` — IN PROGRESS, started 2026-07-23.** Resolves a
-   `.sol` domain (e.g. `lucas.sol`) to its owner address so a merchant
-   can say "charge lucas.sol 15 USDC" instead of a raw address, feeding
-   straight into `solana-pay-request`'s `recipient`. T0, read-only, same
-   pure-core/thin-shim split as the other three. **Core + host tests
-   done; wasm shim not started yet** (deliberately — built in that
-   order per instruction). The hashing/PDA-derivation algorithm, the
+   **`sns-resolve` — DONE, 2026-07-23** (core + shim both, built in that
+   order per instruction). Resolves a `.sol` domain (e.g. `lucas.sol`)
+   to its owner address so a merchant can say "charge lucas.sol 15
+   USDC" instead of a raw address, feeding straight into
+   `solana-pay-request`'s `recipient`. T0, read-only, same
+   pure-core/thin-shim split as the other three, fourth plugin in this
+   repo. The hashing/PDA-derivation algorithm, the
    root domain authority, and the Name Service program ID were pulled
    directly from the real upstream source this session (not recalled
    from memory) — `solana-labs/solana-program-library`'s
@@ -620,15 +620,35 @@ case closely matches the sponsors' own example already. (Full detail:
    environment, exit, clocks, polling) -- nothing from
    `curve25519-dalek`'s dependency chain introduces a JS-bindgen import
    or anything else that wouldn't instantiate inside ZeroClaw's
-   constrained WASI host (no preopens, no ambient network, only
-   `logging` + optional `wasi:http` linked). An earlier raw `strings`
-   grep on the binary found `wasm_bindgen`-looking symbol names and
-   wasn't trusted as conclusive on its own -- this `wasm-tools` check
-   settles it: those were dead names in a debug/name custom section,
-   never actual required imports. Next: the wasm shim itself (one
-   `getAccountInfo` call on the derived address, feeding `core::run`) --
-   not started yet, per the explicit "core first" build order for this
-   plugin.
+   constrained WASI host. An earlier raw `strings` grep on the binary
+   found `wasm_bindgen`-looking symbol names and wasn't trusted as
+   conclusive on its own -- this `wasm-tools` check settled it: those
+   were dead names in a debug/name custom section, never actual
+   required imports.
+   **The wasm shim, built 2026-07-23 (same day):** one `getAccountInfo`
+   call on the derived address (`fetch_account_data`), feeding
+   `core::run`. New `zeroclaw_solana_core::rpc::account_data_from_result_optional`
+   added to the shared core (and vendored into all four plugins' copies)
+   for this -- unlike `token-risk-check`'s mint lookup, a `null` account
+   here is a normal, expected "unregistered domain" outcome, not an
+   error, so the existing `account_data_from_result` (which errors on
+   null) was the wrong fit; the new function returns `Ok(None)` instead.
+   Re-verified against the *real* `tool-plugin`-world component (not the
+   generic placeholder build used for the core-only check) with
+   `wasm-tools component wit`: imports are `zeroclaw:plugin/logging`,
+   `wasi:http/*` (the `http_client` grant), the standard WASI p2
+   baseline, and one addition beyond what the other three plugins need --
+   `wasi:random/insecure-seed`, from the `curve25519-dalek` chain.
+   Confirmed that import is satisfied unconditionally by ZeroClaw's own
+   host wiring by reading the actual source
+   (`wasmtime_wasi::p2::add_to_linker_async` in
+   `crates/zeroclaw-plugins/src/component.rs:229`, called for every
+   plugin regardless of permissions), not assumed from general WASI
+   knowledge. 8/8 host tests still pass; `cargo clippy -D warnings`
+   clean on host and wasm; wasm32-wasip2 release build succeeds. Not yet
+   exercised against a live RPC endpoint (the other three plugins were,
+   during the original devnet verification pass; this one is newer) --
+   worth doing before the demo, not blocking.
 
 **RULE:** step 1 takes priority over everything else, including items
 already "in progress" from before — it's the single highest-leverage

@@ -407,3 +407,209 @@ pub mod core {
         }
     }
 }
+
+// --- wasm component shim -----------------------------------------------
+// Thin wrapper only: parse JSON args, derive the domain's on-chain
+// address (pure, in core), read `rpc_url` from the jailed `__config`
+// section, make the one allowed RPC call (`getAccountInfo` on the
+// derived address), hand the raw bytes (or `None`, for an unregistered
+// domain) to `core::run`, log via the structured logging import (never
+// stdout). Mirrors plugins/token-risk-check's shape -- same one-RPC-call,
+// T0, read-only pattern.
+#[cfg(target_family = "wasm")]
+mod component {
+    wit_bindgen::generate!({
+        path: "../../wit/v0",
+        world: "tool-plugin",
+        features: ["plugins-wit-v0"],
+    });
+
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use serde_json::{json, Value};
+
+    use crate::core::{self, Args};
+    use exports::zeroclaw::plugin::plugin_info::Guest as PluginInfo;
+    use exports::zeroclaw::plugin::tool::{Guest as Tool, ToolResult};
+    use zeroclaw::plugin::logging::{
+        log_record, LogLevel, PluginAction, PluginEvent, PluginOutcome,
+    };
+    use zeroclaw_solana_core::rpc::{
+        account_data_from_result_optional, parse_response_value, RpcRequest,
+    };
+    use zeroclaw_solana_core::Pubkey;
+
+    struct SnsResolve;
+
+    const PLUGIN_NAME: &str = "sns-resolve";
+    const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+    const TOOL_NAME: &str = "sns-resolve";
+
+    #[derive(serde::Deserialize)]
+    struct ExecuteArgs {
+        domain: String,
+        #[serde(rename = "__config", default)]
+        config: HashMap<String, String>,
+    }
+
+    impl PluginInfo for SnsResolve {
+        fn plugin_name() -> String {
+            PLUGIN_NAME.to_string()
+        }
+
+        fn plugin_version() -> String {
+            PLUGIN_VERSION.to_string()
+        }
+    }
+
+    impl Tool for SnsResolve {
+        fn name() -> String {
+            TOOL_NAME.to_string()
+        }
+
+        fn description() -> String {
+            "Resolves a Solana Name Service .sol domain (e.g. \"lucas.sol\", or \
+             a single subdomain like \"pay.lucas.sol\") to its owner's wallet \
+             address, by deriving the domain's on-chain record address and \
+             reading it -- never by asking a third-party API to say what an \
+             address is. Read-only, never moves funds. Only ever reports the \
+             `owner` field from a real, currently-existing on-chain account; a \
+             domain with no such account is reported as \"unregistered\", not \
+             an error. Pass whichever address `owner` returns straight to \
+             `solana-pay-request`'s `recipient` -- never substitute an address \
+             you were told about in the conversation instead of one this tool \
+             actually returned."
+                .to_string()
+        }
+
+        fn parameters_schema() -> String {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "description": "The .sol domain to resolve, with or without the trailing \".sol\" (e.g. \"lucas\" or \"lucas.sol\"), optionally with one subdomain label (\"pay.lucas.sol\")"
+                    }
+                },
+                "required": ["domain"]
+            })
+            .to_string()
+        }
+
+        fn execute(args: String) -> Result<ToolResult, String> {
+            let parsed: ExecuteArgs = match serde_json::from_str(&args) {
+                Ok(a) => a,
+                Err(e) => {
+                    emit(PluginAction::Fail, PluginOutcome::Failure, "invalid arguments");
+                    return Ok(fail(format!("invalid arguments: {e}")));
+                }
+            };
+
+            // Derive the address to look up before spending an RPC call --
+            // this is also what makes the tool fail closed on a malformed
+            // domain (see core::split_labels) before anything else runs.
+            let key = match core::domain_key(&parsed.domain) {
+                Ok(k) => k,
+                Err(e) => {
+                    emit(PluginAction::Fail, PluginOutcome::Failure, "malformed domain");
+                    return Ok(fail(e.to_string()));
+                }
+            };
+
+            let rpc_url = match parsed.config.get("rpc_url").filter(|v| !v.is_empty()) {
+                Some(u) => u.clone(),
+                None => {
+                    emit(PluginAction::Fail, PluginOutcome::Failure, "no rpc_url configured");
+                    return Ok(fail(
+                        "sns-resolve requires `rpc_url` to be set in this plugin's config \
+                         section (see README) -- no RPC endpoint is hardcoded."
+                            .to_string(),
+                    ));
+                }
+            };
+
+            let account_data = match fetch_account_data(&rpc_url, &Pubkey(key).to_base58()) {
+                Ok(d) => d,
+                Err(e) => {
+                    emit(PluginAction::Fail, PluginOutcome::Failure, "rpc fetch failed");
+                    return Ok(fail(e));
+                }
+            };
+
+            let core_args = Args { domain: parsed.domain };
+            match core::run(&core_args, account_data.as_deref()) {
+                Ok(output) => {
+                    let json = match serde_json::to_string(&output) {
+                        Ok(j) => j,
+                        Err(e) => return Err(format!("failed to encode result: {e}")),
+                    };
+                    emit(PluginAction::Complete, PluginOutcome::Success, &output.status);
+                    Ok(ToolResult { success: true, output: json, error: None })
+                }
+                Err(e) => {
+                    emit(PluginAction::Fail, PluginOutcome::Failure, "core rejected input");
+                    Ok(fail(e.to_string()))
+                }
+            }
+        }
+    }
+
+    /// `getAccountInfo` on the derived domain address. `Ok(None)` means the
+    /// account doesn't exist -- an unregistered domain, a normal outcome,
+    /// not a failure; `account_data_from_result_optional` is what gives
+    /// this function that shape instead of erroring on a null account the
+    /// way `token-risk-check`'s equivalent fetch does for a mint (where a
+    /// missing account really is an error).
+    fn fetch_account_data(rpc_url: &str, address: &str) -> Result<Option<Vec<u8>>, String> {
+        let account_result =
+            rpc_call(rpc_url, "getAccountInfo", json!([address, {"encoding": "base64"}]))?;
+        account_data_from_result_optional(&account_result).map_err(|e| e.to_string())
+    }
+
+    /// A `ToolResult` with `success: false` is a normal, model-visible
+    /// failure (bad args, unreachable RPC, ...) the LLM can react to; only
+    /// genuinely broken states should cross the boundary as `Err`.
+    fn fail(message: String) -> ToolResult {
+        ToolResult {
+            success: false,
+            output: String::new(),
+            error: Some(message),
+        }
+    }
+
+    fn emit(action: PluginAction, outcome: PluginOutcome, message: &str) {
+        log_record(
+            LogLevel::Info,
+            &PluginEvent {
+                function_name: "sns_resolve::tool::execute".to_string(),
+                action,
+                outcome: Some(outcome),
+                duration_ms: None,
+                attrs: None,
+                message: message.to_string(),
+            },
+        );
+    }
+
+    /// One JSON-RPC round trip over the host's `wasi:http` (via `waki`,
+    /// the blocking client that fits `execute`'s synchronous signature).
+    /// Request building and response parsing both go through
+    /// `zeroclaw_solana_core::rpc`, so the exact same logic is exercised by
+    /// its host tests; only the network call itself happens here.
+    fn rpc_call(rpc_url: &str, method: &str, params: Value) -> Result<Value, String> {
+        let req = RpcRequest::new(method, params);
+        let body =
+            serde_json::to_value(&req).map_err(|e| format!("failed to encode rpc request: {e}"))?;
+        let resp = waki::Client::new()
+            .post(rpc_url)
+            .json(&body)
+            .connect_timeout(Duration::from_secs(10))
+            .send()
+            .map_err(|e| format!("rpc request failed: {e}"))?;
+        let resp_body: Value = resp.json().map_err(|e| format!("invalid rpc response: {e}"))?;
+        parse_response_value(resp_body).map_err(|e| e.to_string())
+    }
+
+    export!(SnsResolve);
+}
