@@ -303,50 +303,74 @@ against the real ZeroClaw runtime. State this plainly, with this evidence,
 in the final write-up rather than glossing over it or claiming the cron
 demo works when it doesn't.
 
-## Pre-submission checklist
+## THE ROADMAP
 
-- [x] Structured logging (`log-record` import) confirmed actually wired in
-      all three plugins' real shims, not just planned. Re-verified
-      2026-07-22 by reading each `#[cfg(target_family = "wasm")] mod
-      component` directly (not trusting the "Known gaps" log above): all
-      three (`token-risk-check`, `solana-pay-request`, `payment-watch`)
-      have real `wit_bindgen::generate!` bindings against `wit/v0` and an
-      `emit()`/`log_record(...)` call on both the success and failure
-      paths of `execute`. These are the genuine shims, not the pre-shim
-      scaffold.
-- [x] `payment-watch`'s README contains the actual prompt-injection test
-      transcript text, not just a description of the test existing.
-      Re-verified 2026-07-22: the "Prompt-injection / abuse test
-      transcript" section has the real `match_payment(...)` /
-      `confirm(...)` call-and-result transcript, not a summary.
-- [ ] Write the "what fought you on wasm32-wasip2" paragraph for the
-      final one-page write-up, per the bounty's submission requirements —
-      separate from the individual plugin READMEs.
-- [x] ZeroClaw + Telegram integration — the manual/on-request path works
-      end to end (verified 2026-07-22, see "ZeroClaw daemon integration
-      findings"): real daemon, real Telegram bot, agent correctly calls
-      `payment-watch`/`token-risk-check`. The cron-autonomous "fires on
-      its own" path does **not** work in this ZeroClaw version (platform
-      gap, not a plugin bug) — write that up honestly rather than
-      re-attempt it.
-- [ ] Record the demo video (≤3 minutes).
-- [ ] Prepare showcase post: video + write-up + repo link, post in
-      `#solana-bounty` on Discord (see "RULE CHANGE — CONFIRMED" at the
-      top of this file — not a PR, do not open one).
-- [ ] Track E stretch: `sns-resolve`, then `spl-transfer-build` with
-      durable nonce — only after everything above is done.
-- [ ] **Next thing to tackle:** make `payment-watch` actually notice a
-      landed payment on its own, unprompted — not just answer correctly
-      *when asked*. Confirmed 2026-07-22: today's live testing only
-      proves the latter (ask "check on this payment" -> correct answer,
-      same interaction shape as any other request). It does not
-      spontaneously announce a payment the way the bounty's original
-      "fires an inbound event" framing implies. This is the same root
-      gap as the cron/SOP finding above (a headless trigger needs a live
-      agent-loop turn to execute, so it can't self-fire) and the missing
-      `observer` plugin capability. Solving this for real -- not just
-      writing around it -- is the next real step, once the checklist
-      items above are done.
+This section is the single authoritative task list — it replaces the
+old "Pre-submission checklist" entirely. If anything elsewhere in this
+file (an addendum, a "next thing to tackle" note) conflicts with the
+order or content below, this section wins.
+
+**Confirmed context:** bounty rules changed to a showcase-post format
+(video + write-up + repo link in `#solana-bounty` Discord). No registry
+PR during the bounty. Strategy: lean into the fused, unconditional
+safety-check design as the genuine differentiator, since the base use
+case closely matches the sponsors' own example already. (Full detail:
+"RULE CHANGE — CONFIRMED" at the top of this file.)
+
+**The roadmap, in order:**
+
+1. **HIGHEST PRIORITY:** confirm whether `payment-watch`'s automatic SOP
+   cron trigger now actually completes end to end and posts an
+   unprompted "Invoice paid" message on its own, with no human asking
+   first — this is the single biggest gap against the sponsors' own
+   literal winning-showcase example. If it works, that's the headline
+   moment for the demo video. If it genuinely can't be made reliable in
+   reasonable time, document the honest reason in the write-up rather
+   than fake it, and keep the on-demand version as the proven fallback.
+   (Prior finding on this exact gap: "ZeroClaw daemon integration
+   findings" below — re-verify, don't just trust that log.)
+2. Confirm status of two open items from earlier: BRL-equivalent
+   display, and whether `payment-watch`'s matching logic already
+   rejects a dust/tiny fake payment.
+3. Confirm QR-image support for `solana-pay-request` landed correctly.
+4. Rewrite the wasm32-wasip2 write-up paragraph honestly against the
+   NEW rules' Tier 3 guidance (modular solana crates now compile clean
+   to wasm32-wasip2 — don't repeat the old "avoid solana-sdk entirely"
+   framing as if it still fully holds; describe what was actually built
+   and found, note the newer guidance as real next-step territory).
+5. Deepen the three existing plugins, one at a time, each fully tested
+   before the next:
+   a. Guardrails on `solana-pay-request` (config max amount + mint
+      allowlist, enforced in core, prompt-injection tested)
+   b. LP status check added to `token-risk-check`
+   c. Dust-defense hardening on `payment-watch` (if step 2 found it's a
+      real gap), including exposing recipient/amount/mint/reference as
+      individual verified fields (the "Trust Report" structure)
+6. Record the demo video (≤3 min): lead with the human story (DM,
+   charge, QR, customer pays), peak on the fused safety moment (a
+   payment that's "paid" but flagged red), and if step 1 succeeded,
+   close on the unprompted automatic notification — matching the
+   sponsors' own example beat for beat, proven, not staged.
+7. Write the showcase report: use-case framing first, not a plugin
+   list. Include honest tier defense for all three plugins — explicitly
+   acknowledge `solana-pay-request` could be a Tier 1 Skill per current
+   guidance, and that building it as a plugin was a consistency choice,
+   not a necessity. Include the prompt-injection transcript, custody
+   tier, config/SOP links, and the BRL-specific detail as a called-out
+   originality point.
+8. Post the video + write-up + repo link in `#solana-bounty` on the
+   ZeroClaw Discord. This IS the submission — no PR.
+9. **THEN, only if runway remains**, in order: `sns-resolve` →
+   `spl-transfer-build` with real durable-nonce support (rent ~0.0015
+   SOL, `AdvanceNonceAccount` must be first instruction, one nonce
+   account per in-flight transaction — per the new doc's specifics) →
+   `depin-attest` (software-only sensor input, no hardware required) →
+   "AI negotiates a swap" idea, sequenced after `spl-transfer-build`,
+   T1-only with guardrails from line one.
+
+**RULE:** step 1 takes priority over everything else, including items
+already "in progress" from before — it's the single highest-leverage
+open gap. Do not skip to steps 5+ before 1-4 are confirmed.
 
 ## 2026-07-22 addendum: QR code output + a real redaction bug fix
 
