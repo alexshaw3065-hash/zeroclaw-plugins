@@ -826,9 +826,20 @@ mod component {
         fn description() -> String {
             "Builds a Solana Pay transfer-request URL (QR-ready) for a given \
              recipient, amount, and optional SPL token mint/memo/reference. \
-             Never signs or moves funds -- returns a request only, which a \
-             human pays from their own wallet by scanning the QR or opening \
-             the URL. Send the result's `reply` field to the channel \
+             `recipient` must be a real base58 wallet address -- it is \
+             rejected outright if it isn't. If the recipient you were given \
+             is a `.sol` domain (e.g. \"lucas.sol\", or with the suffix \
+             omitted, e.g. \"lucas\") rather than an address, call \
+             `sns-resolve` on it FIRST and use the `owner` field from its \
+             result as `recipient` here -- never pass the domain string \
+             directly, and never substitute an address you recall from \
+             elsewhere in the conversation instead of the one `sns-resolve` \
+             actually returned. If `sns-resolve` reports the domain as \
+             unregistered, stop and say so; do not guess an address or ask \
+             the user to just supply one. Never signs or moves funds -- \
+             returns a request only, which a human pays from their own \
+             wallet by scanning the QR or opening the URL. Send the \
+             result's `reply` field to the channel \
              VERBATIM, THEN append exactly one more line: `[IMAGE:<qr_url>]` \
              using the `qr_url` field's exact value -- do not paraphrase, \
              reformat, summarize, or add any other text before/after `reply`, \
