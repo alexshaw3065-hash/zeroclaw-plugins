@@ -159,7 +159,9 @@ mod component {
     use zeroclaw_solana_core::rpc::{
         account_data_from_result, max_token_account_amount, parse_response_value, RpcRequest,
     };
-    use zeroclaw_solana_core::{holder_share_pct, parse_mint_account, MintFacts, Pubkey};
+    use zeroclaw_solana_core::{
+        holder_share_pct, lp_status_from_dexscreener, parse_mint_account, MintFacts, Pubkey,
+    };
 
     struct TokenRiskCheck;
 
@@ -191,9 +193,11 @@ mod component {
 
         fn description() -> String {
             "Given a Solana mint address, checks mint/freeze authority, holder \
-             concentration, and Token-2022 extensions (transfer hooks, transfer \
-             fees, permanent delegate), and returns a red/amber/green risk \
-             verdict with reasons. Read-only, never moves funds."
+             concentration, Token-2022 extensions (transfer hooks, transfer \
+             fees, permanent delegate), and -- when the operator has opted in \
+             via config -- on-chain liquidity pool presence/depth, and returns \
+             a red/amber/green risk verdict with reasons. Read-only, never \
+             moves funds."
                 .to_string()
         }
 
@@ -244,13 +248,37 @@ mod component {
                 }
             };
 
-            let facts = match fetch_mint_facts(&rpc_url, &parsed.mint) {
+            let mut facts = match fetch_mint_facts(&rpc_url, &parsed.mint) {
                 Ok(f) => f,
                 Err(e) => {
                     emit(PluginAction::Fail, PluginOutcome::Failure, "rpc fetch failed");
                     return Ok(fail(e));
                 }
             };
+
+            // Opt-in, off by default: an operator who never sets this gets
+            // exactly today's behavior, no extra network call. See
+            // "LP status" below for why a failed/unattempted lookup must
+            // never change the verdict, only a definite answer can.
+            let lp_check_enabled = parsed
+                .config
+                .get("lp_check")
+                .is_some_and(|v| v.eq_ignore_ascii_case("true"));
+            if lp_check_enabled {
+                match fetch_lp_status(&parsed.mint) {
+                    Ok(status) => {
+                        facts.lp_pool_found = Some(status.pool_found);
+                        facts.lp_liquidity_usd = status.liquidity_usd;
+                    }
+                    Err(e) => {
+                        // Best-effort enrichment: log and move on with
+                        // lp_pool_found still None, exactly as if this
+                        // were never enabled -- never fails the whole
+                        // check over a third-party API hiccup.
+                        emit(PluginAction::Note, PluginOutcome::Failure, &format!("lp status fetch failed: {e}"));
+                    }
+                }
+            }
 
             let core_args = Args { mint: parsed.mint };
             match core::run(&core_args, &facts) {
@@ -320,6 +348,26 @@ mod component {
             &parsed_mint,
             holder_share_pct(largest_amount, parsed_mint.supply),
         ))
+    }
+
+    /// Best-effort liquidity-pool lookup via Dexscreener's free, no-API-
+    /// key public endpoint (confirmed live 2026-07-23: a mint with pools
+    /// returns real pair/liquidity data; a mint it's never indexed --
+    /// including every devnet or freshly-minted address -- returns
+    /// `{"pairs": null}`, a normal 200, not an error). This is a signal
+    /// about pool *existence and depth* only -- it says nothing about
+    /// whether LP tokens are locked or burned, which would need a
+    /// different, specialized data source. Parsing itself is host-tested
+    /// in `zeroclaw_solana_core::dex`; only the network call is here.
+    fn fetch_lp_status(mint: &str) -> Result<zeroclaw_solana_core::LpStatus, String> {
+        let url = format!("https://api.dexscreener.com/latest/dex/tokens/{mint}");
+        let resp = waki::Client::new()
+            .get(&url)
+            .connect_timeout(Duration::from_secs(5))
+            .send()
+            .map_err(|e| format!("request failed: {e}"))?;
+        let body: serde_json::Value = resp.json().map_err(|e| format!("invalid json: {e}"))?;
+        Ok(lp_status_from_dexscreener(&body))
     }
 
     /// One JSON-RPC round trip over the host's `wasi:http` (via `waki`,

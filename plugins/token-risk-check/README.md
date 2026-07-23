@@ -2,8 +2,8 @@
 
 Given a Solana mint address, returns a red / amber / green scam-risk
 verdict with plain-language reasons — mint/freeze authority, holder
-concentration, LP status, and Token-2022 extensions (transfer hooks,
-transfer fees, permanent delegate).
+concentration, Token-2022 extensions (transfer hooks, transfer fees,
+permanent delegate), and, opt-in, on-chain liquidity-pool status.
 
 ## Custody tier: T0 (read only)
 
@@ -22,6 +22,42 @@ never a wrong transaction.
 | Key | Required | Description |
 |---|---|---|
 | `rpc_url` | yes | Your Solana RPC endpoint. No key is hardcoded — bring your own. |
+| `lp_check` | no | Set to `"true"` to opt into an on-chain liquidity-pool check via [Dexscreener's](https://dexscreener.com) free, no-API-key public endpoint — no on-chain pool found (or found but thin, under ~$1,000 total) adds an amber reason. Omit for today's behavior unchanged: no extra network call, no LP-related reason ever appears. See "LP status" below for why this defaults off. |
+
+## LP status (opt-in)
+
+When `lp_check = "true"`, this plugin also asks Dexscreener whether the
+mint has any on-chain liquidity pool and how deep it is, and folds that
+into the verdict: no pool found is amber ("can't verify it's
+tradeable"); a pool under ~$1,000 total liquidity is also amber ("thin,
+vulnerable to a rug or heavy price impact"); real liquidity keeps the
+existing verdict unchanged.
+
+**This is a narrower claim than "is the LP locked or burned"** — that
+would need a different, specialized data source this plugin doesn't
+integrate; Dexscreener only confirms pool *existence and depth*. Said
+plainly rather than implied, since overclaiming here would be worse than
+not having the check at all.
+
+**Why this defaults off, and why a failed lookup can never hurt:** this
+is the one enrichment in this repo that could, in principle, change a
+risk *verdict* rather than just a display figure (contrast the BRL
+estimate, which is purely cosmetic) — so it's opt-in rather than
+always-on, and its failure mode is designed not to matter either way.
+`assess` (in `zeroclaw-solana-core::risk`) only ever treats a *definite*
+"no pool" or "thin pool" answer as a reason to add an amber flag; an
+unattempted or failed lookup (`lp_pool_found: None` — the default, an
+unreachable API, a rate limit, or simply this key left unset) changes
+nothing. Two things follow from that: an unconfigured or offline
+deployment behaves exactly as it did before this feature existed, and a
+mint that's already mint/freeze/delegate-flagged Red can never be
+"cleaned up" by a missing or favorable LP answer — the checks in
+`assess` only ever escalate risk, never de-escalate it. Tests:
+`no_lp_pool_found_is_amber_not_green`, `thin_liquidity_is_amber`,
+`healthy_liquidity_stays_green`,
+`missing_lp_data_does_not_change_a_clean_verdict`,
+`missing_lp_data_cannot_mask_a_red_verdict` (all in
+`solana-core/src/risk.rs`).
 
 ## Threat model
 
@@ -77,6 +113,18 @@ verification" below):
 }
 ```
 
+With `lp_check = "true"` set and no on-chain pool found for an otherwise
+clean mint (a freshly minted token, for instance):
+```json
+{
+  "mint": "9e8Bacw455vQjjQqUbwJaL3J4SpRjDCaJd7MPcLHZphQ",
+  "level": "amber",
+  "reasons": [
+    "no on-chain liquidity pool found for this mint -- can't verify it's tradeable"
+  ]
+}
+```
+
 ## What's built vs. what's left
 
 - [x] Pure core logic (`src/lib.rs::core`), fully host-tested
@@ -93,6 +141,11 @@ verification" below):
 - [x] Structured logging via the logging import (`log-record`)
 - [x] Verified `cargo build --target wasm32-wasip2 --release` and
       `cargo clippy --target wasm32-wasip2 -- -D warnings`
+- [x] Opt-in LP status check (`lp_check` config key) via Dexscreener's
+      free public API — pool existence + liquidity depth folded into the
+      shared `assess()` heuristic, fail-open by construction (a missing
+      or failed lookup never changes a verdict; see "LP status" above).
+      Response shape confirmed live against the real API (2026-07-23).
 
 ## Live devnet verification
 

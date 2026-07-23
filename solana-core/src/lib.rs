@@ -8,11 +8,13 @@
 //!
 //! MIT licensed. See ../LICENSE.
 
+pub mod dex;
 pub mod pubkey;
 pub mod risk;
 pub mod rpc;
 pub mod token;
 
+pub use dex::{lp_status_from_dexscreener, LpStatus};
 pub use pubkey::{Pubkey, PubkeyParseError};
 pub use risk::{assess, MintFacts, RiskLevel, RiskReport};
 pub use rpc::{parse_response, parse_response_value, RpcClient, RpcError, RpcRequest};

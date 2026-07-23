@@ -489,7 +489,30 @@ case closely matches the sponsors' own example already. (Full detail:
       tested) plus auto-generated `reference` via `getrandom`. 24/24
       tests pass; wasm32-wasip2 release build + `clippy -D warnings`
       clean on host and wasm.
-   b. LP status check added to `token-risk-check` — not started.
+   b. **DONE 2026-07-23.** LP status check added to `token-risk-check`,
+      opt-in via `lp_check = "true"` config (off by default -- zero
+      behavior change for anyone who doesn't set it, including this
+      repo's own devnet demo mints, which Dexscreener has never indexed
+      and would otherwise get flagged amber). New shared `dex` module in
+      `solana-core` parses Dexscreener's real response shape (confirmed
+      live: `{"pairs": null}` for an unindexed mint, real pair/liquidity
+      data for a known one -- e.g. USDC's pools total ~$2.4M live on
+      2026-07-23). `MintFacts` gains `lp_pool_found`/`lp_liquidity_usd`
+      (both `Option`, both flow through `assess()` in the shared core, so
+      `payment-watch` gets this signal too if ever enabled there); the
+      fail-open contract is load-bearing and tested both directions
+      (`missing_lp_data_does_not_change_a_clean_verdict`,
+      `missing_lp_data_cannot_mask_a_red_verdict`) -- a lookup that never
+      ran can't downgrade a deployment that hasn't opted in, and can't
+      launder a mint that's already Red. Deliberately scoped honestly:
+      this confirms pool *existence and depth*, not locked/burned LP
+      status, which would need a different data source -- said plainly in
+      the README rather than overclaimed. 42/42 solana-core tests (8 new)
+      + 4/4 token-risk-check tests pass; wasm32-wasip2 release build +
+      `clippy -D warnings` clean on host and wasm. Vendored into all three
+      plugins' `solana-core/` copies by hand (no `python3` available in
+      this environment to run `tools/sync_solana_core.py`) and verified
+      byte-identical to the canonical copy via direct `diff`.
    c. **DONE 2026-07-23.** Dust-defense was already a non-issue (see
       step 2 above) but got an explicit named test anyway; the real find
       was the cross-invoice reference-collision gap, now closed on both

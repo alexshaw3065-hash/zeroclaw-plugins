@@ -7,7 +7,12 @@ wasm_path = "token_risk_check.wasm"
 
 capabilities = ["tool"]
 
-# http_client: to call the user's configured Solana RPC endpoint.
-# config_read: to read that RPC endpoint (and nothing else) from config.
+# http_client: to call the user's configured Solana RPC endpoint, and
+#   (only when the operator opts in via `lp_check`) Dexscreener's public
+#   API for liquidity-pool status. http_client is all-or-nothing in this
+#   WIT version (no per-destination restriction), so both calls fall
+#   under this one grant.
+# config_read: to read rpc_url, the optional lp_check flag, and nothing
+#   else from config.
 # No permission requested here can move funds — this plugin is T0.
 permissions = ["http_client", "config_read"]
