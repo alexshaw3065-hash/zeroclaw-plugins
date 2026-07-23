@@ -474,6 +474,33 @@ against the real ZeroClaw runtime. State this plainly, with this evidence,
 in the final write-up rather than glossing over it or claiming the cron
 demo works when it doesn't.
 
+**A real, promising lead found 2026-07-23, not yet tried -- come back to
+this.** The finding above is specifically about the **SOP engine's** cron
+trigger. There is a second, completely separate cron mechanism in
+ZeroClaw: the top-level `zeroclaw cron add <expr> "<prompt>" --agent
+<alias> --prompt` command (distinct from `zeroclaw sop`). Traced its
+execution path in the real source
+(`run_agent_job` in `crates/zeroclaw-runtime/src/cron/scheduler.rs`,
+`C:\Users\User\Desktop\plugin\zeroclaw`): it calls `crate::agent::run(...)`
+**directly** -- a genuine, tool-capable agent-loop turn, the same kind a
+live chat message gets, not the SOP engine's constrained step model. It
+also has a built-in `delivery.mode = "announce"` config (a `channel` +
+`to` target) specifically for pushing the agent's response to a channel
+like Telegram unprompted, plus a `NO_REPLY` sentinel convention the
+prompt can have the agent return to skip delivery when there's nothing
+new to report. This looks structurally sound for exactly what step 1
+needs (something that self-drives a real tool call and only speaks up
+when `payment-watch` actually reports "paid") -- **but it has not been
+live-tested yet.** Next step when picking this back up: something like
+`zeroclaw cron add "*/2 * * * *" "check whether the 0.5 SOL payment to
+<recipient> with reference <ref> has landed via payment-watch; if paid,
+report its reply verbatim; otherwise return NO_REPLY" --agent assistant
+--prompt`, with delivery configured to announce to
+`telegram.default`/the owner, watched across a few real ticks the same
+way the original SOP finding was verified (not just assumed from the
+source read). Config/CLI-only if it works -- no plugin code changes
+needed.
+
 ## THE ROADMAP
 
 This section is the single authoritative task list — it replaces the
