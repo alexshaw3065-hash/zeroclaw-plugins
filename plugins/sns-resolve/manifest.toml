@@ -1,0 +1,14 @@
+# See README.md for the custody tier writeup and threat model this
+# manifest is meant to enforce.
+
+name = "sns-resolve"
+version = "0.1.0"
+wasm_path = "sns_resolve.wasm"
+
+capabilities = ["tool"]
+
+# http_client: to call the user's configured Solana RPC endpoint
+# (getAccountInfo on the derived domain address only).
+# config_read: to read that RPC endpoint (and nothing else) from config.
+# No permission requested here can move funds -- this plugin is T0.
+permissions = ["http_client", "config_read"]

@@ -1,0 +1,53 @@
+[package]
+name = "sns-resolve"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "T0 ZeroClaw plugin: resolves a .sol domain to its owner address via the Solana Name Service."
+publish = false
+
+# cdylib for the wasm component; rlib so the pure core is testable on the
+# host with a plain `cargo test`.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Vendored copy, not a path dependency reaching outside this directory --
+# see solana-core/Cargo.toml and tools/sync_solana_core.py for why. Used
+# for base58 formatting of the resolved owner address, matching the
+# other three plugins.
+zeroclaw-solana-core = { path = "solana-core" }
+wit-bindgen = "0.46"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# SNS hashes a domain name before deriving its address; a small, widely
+# used, no_std-capable hasher, not the official Solana SDK's own hash
+# helper (which would drag in a much larger dependency for one function).
+sha2 = "0.10"
+# The official Solana crate's find_program_address -- SNS domain
+# resolution requires a correct off-curve program-derived-address search,
+# which needs real curve25519 point-validity math. Hand-rolling that by
+# hand is a real correctness risk for a plugin whose entire job is
+# "resolve to the right address" -- the bounty's own verified Tier 3
+# guidance says the modular solana crates compile clean to wasm32-wasip2;
+# this is that guidance's first real application in this repo (confirmed
+# by an actual wasm32-wasip2 cdylib build in this session, not just
+# trusting the claim). Scoped to exactly the one function that needs it
+# (see core::find_program_address) -- everywhere else in this plugin
+# uses zeroclaw_solana_core::Pubkey, matching the other three plugins.
+solana-pubkey = { version = "2", features = ["curve25519", "sha2"] }
+
+# wasi:http client -- only compiled for the wasm component, never on the
+# host, so `cargo test` never tries to build it. Used for the one
+# allowed RPC call (getAccountInfo on the derived domain address).
+[target.'cfg(target_family = "wasm")'.dependencies]
+waki = { version = "0.5.1", features = ["json"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+
+# Standalone crate: built for wasm32-wasip2, not part of any host workspace.
+[workspace]

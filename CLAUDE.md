@@ -580,6 +580,55 @@ case closely matches the sponsors' own example already. (Full detail:
    `depin-attest` (software-only sensor input, no hardware required) →
    "AI negotiates a swap" idea, sequenced after `spl-transfer-build`,
    T1-only with guardrails from line one.
+   **`sns-resolve` — IN PROGRESS, started 2026-07-23.** Resolves a
+   `.sol` domain (e.g. `lucas.sol`) to its owner address so a merchant
+   can say "charge lucas.sol 15 USDC" instead of a raw address, feeding
+   straight into `solana-pay-request`'s `recipient`. T0, read-only, same
+   pure-core/thin-shim split as the other three. **Core + host tests
+   done; wasm shim not started yet** (deliberately — built in that
+   order per instruction). The hashing/PDA-derivation algorithm, the
+   root domain authority, and the Name Service program ID were pulled
+   directly from the real upstream source this session (not recalled
+   from memory) — `solana-labs/solana-program-library`'s
+   `name-service/program/src/state.rs` (`HASH_PREFIX`, the 3x32-byte
+   seed layout, program ID `namesLPneVptA9Z5rqUDD9tMTWEJwofgaYwp8cawRkX`)
+   and `SolanaNameService/sns-sdk`'s
+   `rust-crates/sns-sdk/src/derivation.rs` (the root-vs-subdomain
+   splitting rules, root authority `58PwtjSDuFHuUkYjH9BYnnQKHfwo9reZhC2zMJv9JPkx`).
+   Two of the 8 host tests check the derivation against that same file's
+   own real, published test vectors (`bonfida` →
+   `Crf8hzfthWGbGbLTVCiqRqV5MVnbpHB1L9KQMd6gsinb`, `dex.bonfida` →
+   `HoFfFXqFHAC8RP3duuQNzag1ieUwJRBv1HtRNiWFq4Qu`) — both pass exactly.
+   **A deliberate, verified break from this repo's usual "hand-roll
+   everything" rule:** correct PDA derivation needs real curve25519
+   point-validity math (to find the highest bump seed that's off the
+   ed25519 curve); hand-rolling that is a real correctness risk for a
+   plugin whose entire job is resolving to the right address, so this
+   plugin depends on the official `solana-pubkey` crate (`curve25519`
+   feature) for exactly that one function
+   (`core::find_program_address`) — nowhere else. This is the bounty's
+   own verified Tier 3 guidance (modular Solana crates compile clean to
+   `wasm32-wasip2`) getting its first real use in this repo rather than
+   just being cited. Confirmed by an actual build this session, not
+   assumed: `solana-pubkey` with `curve25519` compiles to a real
+   `wasm32-wasip2` `cdylib` component (checked in a scratch crate first,
+   then in `sns-resolve` itself). 8/8 host tests pass; `cargo clippy -D
+   warnings` clean on host. **Also confirmed with `wasm-tools component
+   wit` (authoritative, not raw-string grep) against the real
+   `sns-resolve` wasm32-wasip2 build:** the compiled component's entire
+   import surface is standard `wasi:cli`/`wasi:io`/`wasi:clocks` (stdio,
+   environment, exit, clocks, polling) -- nothing from
+   `curve25519-dalek`'s dependency chain introduces a JS-bindgen import
+   or anything else that wouldn't instantiate inside ZeroClaw's
+   constrained WASI host (no preopens, no ambient network, only
+   `logging` + optional `wasi:http` linked). An earlier raw `strings`
+   grep on the binary found `wasm_bindgen`-looking symbol names and
+   wasn't trusted as conclusive on its own -- this `wasm-tools` check
+   settles it: those were dead names in a debug/name custom section,
+   never actual required imports. Next: the wasm shim itself (one
+   `getAccountInfo` call on the derived address, feeding `core::run`) --
+   not started yet, per the explicit "core first" build order for this
+   plugin.
 
 **RULE:** step 1 takes priority over everything else, including items
 already "in progress" from before — it's the single highest-leverage

@@ -41,6 +41,7 @@ VENDORED_IN = [
     "token-risk-check",
     "solana-pay-request",
     "payment-watch",
+    "sns-resolve",
 ]
 
 # Build/lock artifacts that legitimately differ per vendored copy and must
