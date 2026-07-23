@@ -513,15 +513,25 @@ case closely matches the sponsors' own example already. (Full detail:
       plugins' `solana-core/` copies by hand (no `python3` available in
       this environment to run `tools/sync_solana_core.py`) and verified
       byte-identical to the canonical copy via direct `diff`.
-   c. **DONE 2026-07-23.** Dust-defense was already a non-issue (see
-      step 2 above) but got an explicit named test anyway; the real find
-      was the cross-invoice reference-collision gap, now closed on both
-      sides (`solana-pay-request` generates the reference,
+   c. **DONE 2026-07-23, updated same day.** Dust-defense was already a
+      non-issue (see step 2 above) but got an explicit named test anyway;
+      the real find was the cross-invoice reference-collision gap, now
+      closed on both sides (`solana-pay-request` generates the reference,
       `payment-watch` verifies it's actually present in the matched
       transaction). The Trust Report (`recipient_verified`,
-      `amount_verified`, `mint_verified`, `reference_verified`) is now on
-      every "paid" result. 28/28 tests pass; wasm32-wasip2 release build
-      + `clippy -D warnings` clean on host and wasm.
+      `amount_status`, `mint_verified`, `reference_verified`,
+      `tx_confirmed`) is now on **every** result, "paid" or "pending" --
+      not just "paid" as first shipped. `amount_verified: bool` was later
+      restructured into the tri-state `amount_status` (`Match`/`Under`/
+      `None`) and `tx_confirmed` was added, as part of the deterministic
+      reply-formatting work ("2026-07-23 addendum: deterministic reply
+      formatting" below) -- `output.reply` is now a real, host-tested
+      checklist + verdict built from these exact fields, sent verbatim by
+      the agent instead of composed by the LLM. 37/37 `payment-watch`
+      tests pass (up from 28: 9 new, covering the pending-path diagnosis
+      and all four reply cases -- green/red/amber/not-confirmed);
+      wasm32-wasip2 release build + `clippy -D warnings` clean on host
+      and wasm.
 6. Record the demo video (≤3 min): lead with the human story (DM,
    charge, QR, customer pays), peak on the fused safety moment (a
    payment that's "paid" but flagged red), and if step 1 succeeded,
