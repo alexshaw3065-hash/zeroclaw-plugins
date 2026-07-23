@@ -25,6 +25,37 @@ is a malformed or misleading *request*, never an unauthorized *transfer*.
 | Key | Required | Description |
 |---|---|---|
 | `brl_rate` | no | BRL per one unit of whatever asset this request is denominated in (a decimal string, e.g. `"5.60"`). Setting this opts into the "Brazil touch" (root README): the output carries a `brl_estimate` display string alongside the crypto amount. Omit it and `brl_estimate` is simply absent, with zero extra network calls. When set, this value is both the fallback figure *and* the signal to try live pricing first: [Jupiter's price API](https://station.jup.ag) for a live USD price on the requested mint, times [Frankfurter's](https://www.frankfurter.app/) daily USD→BRL rate — falling back to this static value on any failure (unreachable API, rate limit, or a mint neither service has data for, e.g. our own test mints). Confirmed live: both are free, no API key needed, correctly return "no data" rather than erroring for an unknown mint. |
+| `max_amount` | no | A ceiling on the `amount` a single request can charge (a decimal string, e.g. `"500"`). Omit for no limit. Enforced in `core::run`, so it applies no matter what the LLM is told to ask for — see "Guardrails" below. |
+| `mint_allowlist` | no | Comma-separated base58 mint addresses this terminal is allowed to charge in (same convention as `plugins/redact-text`'s `patterns` key). Omit for no restriction. To allow native SOL, include the literal entry `SOL`. A request for any mint not on this list is rejected before a URL is built. |
+
+## Guardrails (config max amount + mint allowlist)
+
+Both `max_amount` and `mint_allowlist` are read only from this plugin's
+operator-set config (`config_read`), never from the request the LLM
+constructs — there is no field on the tool's own arguments that reaches
+either check. This is the same split that makes the risk screening in
+`payment-watch` un-talk-around-able: the enforcement lives in `core::run`
+as plain Rust, not as a instruction the model is asked to remember, so a
+crafted `amount` or a plausible-looking-but-disallowed `mint` fails
+exactly like a malformed address does — before anything is built, with
+no code path that skips the check. See
+`core::tests::guardrails_cannot_be_overridden_by_anything_in_the_request`
+for the automated version of this claim.
+
+## Auto-generated `reference`
+
+If the caller omits `reference`, this plugin generates a fresh,
+cryptographically random one itself (32 bytes via `getrandom`, base58-
+encoded) and returns it in the response — the caller never has to invent
+one, and per the Solana Pay spec a reference doesn't need to correspond
+to a real keypair to work as a correlation key. This closes a real gap:
+without a unique reference per invoice, `payment-watch` falls back to
+matching by recipient address alone, so two invoices open at the same
+time for the same recipient/mint could cross-match an unrelated payment.
+Generation fails the request outright (rather than silently falling back
+to a weaker, guessable value) if the host's entropy source is ever
+unavailable — a predictable reference would defeat the point of adding
+one.
 
 ## Threat model
 
@@ -77,7 +108,25 @@ text is neutralized inside `memo=`:
 solana:11111111111111111111111111111111?amount=25&memo=%26recipient%3DEvilEvilEvilEvilEvilEvilEvilEvil1%26amount%3D999999
 ```
 
-Both transcripts are the exact output of automated tests —
+**Attempt 3 — trying to charge more than the configured guardrail allows:**
+
+Config: `max_amount = "100"`. Input:
+```json
+{ "recipient": "11111111111111111111111111111111", "amount": "999999999" }
+```
+
+Result: rejected — the guardrail is checked in `core::run` itself, not
+something the model could have been talked out of enforcing:
+```
+Error: bad input: requested amount 999999999 exceeds the configured max_amount of 100
+```
+
+Both this and the equivalent `mint_allowlist` rejection are exact output
+of automated tests — `rejects_an_amount_over_the_configured_max`,
+`rejects_a_mint_not_in_the_allowlist`, and
+`guardrails_cannot_be_overridden_by_anything_in_the_request`.
+
+All transcripts above are the exact output of automated tests —
 `prompt_injection_in_recipient_fails_closed` and
 `malicious_memo_cannot_inject_extra_query_params` in
 `plugins/solana-pay-request/src/lib.rs`.
@@ -146,11 +195,17 @@ when `brl_rate` is configured.
       touch note). Hybrid: live price (Jupiter + Frankfurter, both free,
       no API key) when available, falls back to the operator's static
       `brl_rate` on any failure -- never a hard requirement either way.
-- [ ] Automatic `reference` generation when the caller omits one: the
-      `tool-plugin` WIT world doesn't currently import a randomness
-      capability, so this plugin can't generate one itself; the caller
-      (agent or SOP) must supply a reference if `payment-watch` needs one
-      to correlate the resulting transaction
+- [x] Automatic `reference` generation when the caller omits one, via
+      `getrandom` (the same crate/pattern `plugins/wecom-ws` already uses
+      on `wasm32-wasip2` for its own IDs, so this wasn't a new/unproven
+      capability — earlier README text claiming the WIT world couldn't
+      support this was wrong and has been corrected). Fails the request
+      rather than falling back to a weaker, guessable value if entropy is
+      ever unavailable.
+- [x] Guardrails: operator-configured `max_amount` and `mint_allowlist`,
+      enforced in `core::run` so no request-side input can talk around
+      them — prompt-injection tested
+      (`guardrails_cannot_be_overridden_by_anything_in_the_request`).
 
 ## What we'd build next
 

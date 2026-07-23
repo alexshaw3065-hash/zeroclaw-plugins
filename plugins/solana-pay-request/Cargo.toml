@@ -23,8 +23,12 @@ serde_json = "1"
 # host, so `cargo test` never tries to build it. Used only to
 # opportunistically upgrade the operator's static `brl_rate` to a live
 # one (Jupiter + Frankfurter); never for the Solana Pay URL itself.
+# getrandom is used to auto-generate a fresh Solana Pay `reference` when
+# the caller omits one -- same crate/pattern plugins/wecom-ws already
+# uses on this target, so this isn't a new/unproven wasm capability.
 [target.'cfg(target_family = "wasm")'.dependencies]
 waki = { version = "0.5.1", features = ["json"] }
+getrandom = "0.3"
 
 [profile.release]
 opt-level = "s"
