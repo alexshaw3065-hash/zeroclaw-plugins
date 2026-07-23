@@ -484,12 +484,21 @@ case closely matches the sponsors' own example already. (Full detail:
    and found, note the newer guidance as real next-step territory).
 5. Deepen the three existing plugins, one at a time, each fully tested
    before the next:
-   a. Guardrails on `solana-pay-request` (config max amount + mint
-      allowlist, enforced in core, prompt-injection tested)
-   b. LP status check added to `token-risk-check`
-   c. Dust-defense hardening on `payment-watch` (if step 2 found it's a
-      real gap), including exposing recipient/amount/mint/reference as
-      individual verified fields (the "Trust Report" structure)
+   a. **DONE 2026-07-23.** Guardrails on `solana-pay-request` (config
+      `max_amount` + `mint_allowlist`, enforced in core, prompt-injection
+      tested) plus auto-generated `reference` via `getrandom`. 24/24
+      tests pass; wasm32-wasip2 release build + `clippy -D warnings`
+      clean on host and wasm.
+   b. LP status check added to `token-risk-check` — not started.
+   c. **DONE 2026-07-23.** Dust-defense was already a non-issue (see
+      step 2 above) but got an explicit named test anyway; the real find
+      was the cross-invoice reference-collision gap, now closed on both
+      sides (`solana-pay-request` generates the reference,
+      `payment-watch` verifies it's actually present in the matched
+      transaction). The Trust Report (`recipient_verified`,
+      `amount_verified`, `mint_verified`, `reference_verified`) is now on
+      every "paid" result. 28/28 tests pass; wasm32-wasip2 release build
+      + `clippy -D warnings` clean on host and wasm.
 6. Record the demo video (≤3 min): lead with the human story (DM,
    charge, QR, customer pays), peak on the fused safety moment (a
    payment that's "paid" but flagged red), and if step 1 succeeded,
@@ -549,16 +558,21 @@ open gap. Do not skip to steps 5+ before 1-4 are confirmed.
   reusing a well-known address (this happened in the original live
   verification run, which used the WSOL mint address as a stand-in
   reference) instead of a fresh, single-use random value, defeating the
-  correlation's purpose. This is a real hardening target for `THE
-  ROADMAP` step 5 (5a: have `solana-pay-request` auto-generate a
-  cryptographically random reference by default when the caller omits
-  one, using `getrandom` — already a proven pattern in this repo, see
-  `plugins/wecom-ws/src/lib.rs`'s `random_id()`, so no new/unproven
-  wasm capability is needed; 5c: have `payment-watch` additionally
-  verify the matched transaction's account keys actually contain the
-  expected `reference`, as defense in depth, not just trust in the
-  query filter). Not fixed yet — this is the plan for step 5, tracked
-  there.
+  correlation's purpose. **Fixed 2026-07-23, in step 5:** 5a —
+  `solana-pay-request` now auto-generates a cryptographically random
+  reference via `getrandom` whenever the caller omits one (same pattern
+  `plugins/wecom-ws` already uses on `wasm32-wasip2`, so this wasn't a
+  new/unproven capability), and fails the request rather than degrading
+  to a guessable value if entropy is unavailable. 5c — `payment-watch`
+  now verifies the matched transaction's account keys actually contain
+  the requested `reference` directly (`ObservedTransfer::has_reference`,
+  enforced in `match_payment`), independent of whichever address the RPC
+  query happened to search by — real defense in depth, not just trust in
+  the query filter. Tested on both sides: `solana-pay-request`'s
+  reference-generation path, and `payment-watch`'s
+  `a_transfer_missing_the_requested_reference_does_not_match` /
+  `a_transfer_carrying_the_requested_reference_does_match`. 28/28
+  `payment-watch` tests pass.
 
 **Step 3 — CONFIRMED, 2026-07-23:** QR-image support for
 `solana-pay-request` landed correctly and is solid: `qr_url` field

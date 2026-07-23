@@ -54,6 +54,39 @@ pub mod core {
         pub amount_raw: u64,
         /// Decimals of the received token (9 for native SOL).
         pub decimals: u8,
+        /// Whether the invoice's requested `reference` (if any) was found
+        /// as an account key in this same transaction -- `true` when no
+        /// reference was requested at all (the check doesn't apply, so it
+        /// can't fail it). Defense in depth, independent of whichever
+        /// address the shim happened to query
+        /// `getSignaturesForAddress` by: see `match_payment`.
+        pub has_reference: bool,
+    }
+
+    /// Per-field verification detail for a "paid" result -- makes the
+    /// confirmation individually auditable instead of one opaque status
+    /// string. Every field here reflects something actually checked
+    /// against on-chain data by `match_payment`/`transfers_from_tx_meta`,
+    /// not merely echoed input; a "paid" result cannot exist with any of
+    /// these false; on "pending" this whole report is absent, since
+    /// nothing has been verified yet.
+    #[derive(Debug, Serialize, PartialEq)]
+    pub struct TrustReport {
+        /// The transaction's balance delta credited the requested
+        /// recipient -- `transfers_from_tx_meta` only ever produces a
+        /// transfer for the exact recipient it was asked about.
+        pub recipient_verified: bool,
+        /// The landed amount met or exceeded the requested amount.
+        pub amount_verified: bool,
+        /// The paying asset matched what was requested (native SOL
+        /// matches a mint-less request).
+        pub mint_verified: bool,
+        /// `Some(true)` when a `reference` was requested and found as an
+        /// account key in the paying transaction; `None` when no
+        /// `reference` was requested at all (not applicable). Never
+        /// `Some(false)` -- a transfer failing this check is filtered out
+        /// by `match_payment` before a "paid" result can exist.
+        pub reference_verified: Option<bool>,
     }
 
     #[derive(Debug, Serialize, PartialEq)]
@@ -77,6 +110,10 @@ pub mod core {
         /// README's "Brazil touch." Always `None` on a "pending" result;
         /// a not-yet-landed payment has nothing confirmed to convert.
         pub brl_estimate: Option<String>,
+        /// Per-field verification detail -- see `TrustReport`. Present
+        /// only on a "paid" result, `None` on "pending" (nothing to
+        /// report on yet).
+        pub trust_report: Option<TrustReport>,
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -146,7 +183,20 @@ pub mod core {
     /// balance deltas (the reliable way to see "how much did this address
     /// actually receive"), not instruction decoding. A failed transaction
     /// (`meta.err != null`) transferred nothing and yields no transfers.
-    pub fn transfers_from_tx_meta(result: &Value, recipient: &str) -> Vec<ObservedTransfer> {
+    ///
+    /// `reference`, when the invoice requested one, is checked here too --
+    /// defense in depth. The shim already tries to query
+    /// `getSignaturesForAddress` by the reference when one is set, but
+    /// this stamps every transfer parsed from this transaction with
+    /// whether that reference is *actually* one of its account keys, so
+    /// `match_payment` doesn't have to trust the query filter alone (see
+    /// CLAUDE.md's "step 2" note on the cross-invoice collision risk this
+    /// closes).
+    pub fn transfers_from_tx_meta(
+        result: &Value,
+        recipient: &str,
+        reference: Option<&str>,
+    ) -> Vec<ObservedTransfer> {
         let mut out = Vec::new();
         let meta = match result.get("meta") {
             Some(m) if !m.is_null() => m,
@@ -163,6 +213,10 @@ pub mod core {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        // No reference requested at all -> the check doesn't apply, so it
+        // can't fail it (`true`, vacuously). A reference requested but not
+        // found among this transaction's account keys -> `false`.
+        let has_reference = reference.is_none_or(|r| account_index_of(result, r).is_some());
 
         // --- SPL token receipts, from pre/post token balance deltas -------
         let empty = Vec::new();
@@ -191,6 +245,7 @@ pub mod core {
                     mint: mint.map(str::to_string),
                     amount_raw: received,
                     decimals,
+                    has_reference,
                 });
             }
         }
@@ -214,6 +269,7 @@ pub mod core {
                         mint: None,
                         amount_raw: received,
                         decimals: 9,
+                        has_reference,
                     });
                 }
             }
@@ -261,8 +317,11 @@ pub mod core {
     }
 
     /// Find the first observed transfer that satisfies the expected payment:
-    /// the right mint (both native, or the same SPL mint) and at least the
-    /// expected amount (overpayment counts as paid; underpayment does not).
+    /// the right mint (both native, or the same SPL mint), the requested
+    /// `reference` actually present in that same transaction when one was
+    /// requested (defense in depth -- see `ObservedTransfer::has_reference`),
+    /// and at least the expected amount (overpayment counts as paid;
+    /// underpayment -- including a "dust" decoy transfer -- does not).
     /// Returns an index into `observed`, or `None` if nothing matches --
     /// there is no argument, memo, or reference value that can make this
     /// return a match for a payment that did not actually land.
@@ -273,6 +332,9 @@ pub mod core {
         let expected_mint = args.mint.as_deref();
         for (i, t) in observed.iter().enumerate() {
             if t.mint.as_deref() != expected_mint {
+                continue;
+            }
+            if args.reference.is_some() && !t.has_reference {
                 continue;
             }
             let expected_raw = decimal_to_raw(&args.amount, t.decimals)?;
@@ -331,6 +393,19 @@ pub mod core {
             risk_reasons: report.reasons,
             summary,
             brl_estimate: brl_rate.and_then(|rate| format_brl(&args.amount, rate)),
+            // Every field here is `true` by construction: `matched` only
+            // ever reached this function via `match_payment`, which
+            // already enforced recipient (transfers_from_tx_meta only
+            // parses transfers credited to the requested recipient),
+            // mint, amount, and reference. This isn't new checking -- it's
+            // making already-enforced guarantees legible per-field
+            // instead of collapsing them into one opaque "paid".
+            trust_report: Some(TrustReport {
+                recipient_verified: true,
+                amount_verified: true,
+                mint_verified: true,
+                reference_verified: args.reference.is_some().then_some(true),
+            }),
         }
     }
 
@@ -349,6 +424,7 @@ pub mod core {
             risk_reasons: Vec::new(),
             summary: format!("No matching payment yet ({asset} to {}).", short_addr(&args.recipient)),
             brl_estimate: None,
+            trust_report: None,
         }
     }
 
@@ -437,24 +513,26 @@ pub mod core {
         #[test]
         fn parses_an_spl_receipt_from_balance_delta() {
             let tx = spl_tx(RECIPIENT, USDC, "0", "25000000", 6);
-            let transfers = transfers_from_tx_meta(&tx, RECIPIENT);
+            let transfers = transfers_from_tx_meta(&tx, RECIPIENT, None);
             assert_eq!(transfers.len(), 1);
             assert_eq!(transfers[0].mint.as_deref(), Some(USDC));
             assert_eq!(transfers[0].amount_raw, 25_000_000);
             assert_eq!(transfers[0].decimals, 6);
+            // No reference was requested -- vacuously true.
+            assert!(transfers[0].has_reference);
         }
 
         #[test]
         fn ignores_token_balances_for_other_owners() {
             let tx = spl_tx("SomeOtherOwner11111111111111111111111111111", USDC, "0", "25000000", 6);
-            assert!(transfers_from_tx_meta(&tx, RECIPIENT).is_empty());
+            assert!(transfers_from_tx_meta(&tx, RECIPIENT, None).is_empty());
         }
 
         #[test]
         fn a_failed_transaction_yields_no_transfers() {
             let mut tx = spl_tx(RECIPIENT, USDC, "0", "25000000", 6);
             tx["meta"]["err"] = json!({"InstructionError": [0, "Custom"]});
-            assert!(transfers_from_tx_meta(&tx, RECIPIENT).is_empty());
+            assert!(transfers_from_tx_meta(&tx, RECIPIENT, None).is_empty());
         }
 
         #[test]
@@ -470,11 +548,49 @@ pub mod core {
                     "signatures": ["NativeSig11111111111111111111111111111111111111111111111111111111"]
                 }
             });
-            let transfers = transfers_from_tx_meta(&tx, RECIPIENT);
+            let transfers = transfers_from_tx_meta(&tx, RECIPIENT, None);
             assert_eq!(transfers.len(), 1);
             assert!(transfers[0].mint.is_none());
             assert_eq!(transfers[0].amount_raw, 1_000_000_000);
             assert_eq!(transfers[0].decimals, 9);
+        }
+
+        // ---- reference defense-in-depth ------------------------------------
+
+        const REFERENCE: &str = "So11111111111111111111111111111111111111112";
+
+        fn spl_tx_with_accounts(
+            owner: &str,
+            mint: &str,
+            pre: &str,
+            post: &str,
+            decimals: u64,
+            account_keys: &[&str],
+        ) -> Value {
+            let mut tx = spl_tx(owner, mint, pre, post, decimals);
+            tx["transaction"]["message"] = json!({
+                "accountKeys": account_keys.iter().map(|k| json!({"pubkey": k})).collect::<Vec<_>>()
+            });
+            tx
+        }
+
+        #[test]
+        fn has_reference_true_when_the_reference_is_an_account_key() {
+            let tx = spl_tx_with_accounts(RECIPIENT, USDC, "0", "25000000", 6, &[RECIPIENT, REFERENCE]);
+            let transfers = transfers_from_tx_meta(&tx, RECIPIENT, Some(REFERENCE));
+            assert_eq!(transfers.len(), 1);
+            assert!(transfers[0].has_reference);
+        }
+
+        #[test]
+        fn has_reference_false_when_the_reference_is_missing() {
+            // A transaction that pays the right recipient/mint/amount but
+            // simply doesn't carry the requested reference as an account
+            // key -- e.g. an unrelated payment for a different invoice.
+            let tx = spl_tx_with_accounts(RECIPIENT, USDC, "0", "25000000", 6, &[RECIPIENT]);
+            let transfers = transfers_from_tx_meta(&tx, RECIPIENT, Some(REFERENCE));
+            assert_eq!(transfers.len(), 1);
+            assert!(!transfers[0].has_reference);
         }
 
         // ---- signatures_from_response -------------------------------------
@@ -497,6 +613,7 @@ pub mod core {
                 mint: Some(USDC.to_string()),
                 amount_raw,
                 decimals: 6,
+                has_reference: true,
             }
         }
 
@@ -555,6 +672,38 @@ pub mod core {
             assert_eq!(match_payment(&args_for("25", None), &observed).unwrap(), None);
         }
 
+        /// Cross-invoice collision defense: right mint, right (or more
+        /// than) amount, but the transaction doesn't actually carry the
+        /// reference this specific invoice requested -- e.g. a second,
+        /// unrelated customer's payment to the same recipient in the same
+        /// mint, happening to be concurrently open. Must not match, even
+        /// though mint+amount alone would satisfy it.
+        #[test]
+        fn a_transfer_missing_the_requested_reference_does_not_match() {
+            let mut args = args_for("25", Some(USDC));
+            args.reference = Some(REFERENCE.to_string());
+            let mut observed = spl_transfer(25_000_000);
+            observed.has_reference = false;
+            assert_eq!(match_payment(&args, &[observed]).unwrap(), None);
+        }
+
+        #[test]
+        fn a_transfer_carrying_the_requested_reference_does_match() {
+            let mut args = args_for("25", Some(USDC));
+            args.reference = Some(REFERENCE.to_string());
+            let observed = spl_transfer(25_000_000); // has_reference: true by default
+            assert_eq!(match_payment(&args, &[observed]).unwrap(), Some(0));
+        }
+
+        #[test]
+        fn has_reference_is_ignored_when_no_reference_was_requested() {
+            // args.reference is None -- has_reference on the observed
+            // transfer shouldn't matter at all.
+            let mut observed = spl_transfer(25_000_000);
+            observed.has_reference = false;
+            assert_eq!(match_payment(&args_for("25", Some(USDC)), &[observed]).unwrap(), Some(0));
+        }
+
         // ---- the fused risk screening -------------------------------------
 
         #[test]
@@ -566,6 +715,38 @@ pub mod core {
             assert_eq!(out.risk_level.as_deref(), Some("green"));
             assert!(out.summary.contains("confirmed"));
             assert!(out.brl_estimate.is_none());
+        }
+
+        // ---- Trust Report ---------------------------------------------------
+
+        #[test]
+        fn a_paid_result_always_carries_a_fully_verified_trust_report() {
+            let observed = spl_transfer(25_000_000);
+            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, None);
+            let report = out.trust_report.expect("a paid result must carry a trust report");
+            assert!(report.recipient_verified);
+            assert!(report.amount_verified);
+            assert!(report.mint_verified);
+            // No reference was requested in this invoice -- not applicable.
+            assert_eq!(report.reference_verified, None);
+        }
+
+        #[test]
+        fn trust_report_reference_verified_true_when_a_reference_was_requested() {
+            let mut args = args_for("25", Some(USDC));
+            args.reference = Some(REFERENCE.to_string());
+            let observed = spl_transfer(25_000_000); // has_reference: true
+            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let out = confirm(&args, &observed, &facts, None);
+            assert_eq!(out.trust_report.unwrap().reference_verified, Some(true));
+        }
+
+        #[test]
+        fn pending_never_carries_a_trust_report() {
+            // Nothing has landed yet -- there is nothing to report on.
+            let out = pending(&args_for("25", Some(USDC)));
+            assert!(out.trust_report.is_none());
         }
 
         /// The safety-critical case: a payment lands, but in a token with a
@@ -695,7 +876,11 @@ mod component {
              it on a schedule (e.g. an SOP cron) to poll until paid. If \
              `brl_estimate` is present on a \"paid\" result, show it alongside \
              `amount` -- omit it entirely on \"pending\" or when absent, never \
-             invent a figure yourself."
+             invent a figure yourself. A \"paid\" result also carries a \
+             `trust_report` (recipient/amount/mint/reference, each individually \
+             verified against on-chain data) -- don't dump it into the chat \
+             reply by default, a short confirmation is enough, but surface it \
+             if the operator asks what exactly was checked."
                 .to_string()
         }
 
@@ -816,7 +1001,7 @@ mod component {
                 "getTransaction",
                 json!([sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}]),
             )?;
-            observed.extend(core::transfers_from_tx_meta(&tx, &args.recipient));
+            observed.extend(core::transfers_from_tx_meta(&tx, &args.recipient, args.reference.as_deref()));
         }
 
         let matched = core::match_payment(args, &observed).map_err(|e| e.to_string())?;
