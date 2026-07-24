@@ -748,6 +748,103 @@ case closely matches the sponsors' own example already. (Full detail:
    `payment-watch-poll` SOP (`~/.zeroclaw/data/sops/payment-watch-poll/`,
    outside this repo) to send the new `reply` field instead of the old
    free-text `summary` -- it predated the reply-formatting work.
+   **`spl-transfer-build` — DONE, 2026-07-24** (core, tests, and wasm
+   shim built in that order per instruction; built on its own branch,
+   `claude/spl-transfer-build`, off the completed
+   `claude/zeroclaw-solana-plugin-hn3vrf` work -- `main` and that branch
+   were never touched). Builds an unsigned SPL token transfer -- optional
+   recipient-ATA creation, an optional memo for invoice reconciliation,
+   optional durable-nonce support -- and returns it as base64 plus a
+   summary. T1 (the repo's ceiling), same as `solana-pay-request`: never
+   signs, never submits, fifth plugin in this repo.
+   **First real use of the modular transaction-building crates, not just
+   `solana-pubkey` for one PDA function like `sns-resolve`:**
+   `solana-instruction`/`-message`/`-transaction`/`-hash`, plus
+   `solana-system-interface` and `solana-nonce`. Two follow-on decisions
+   worth logging because they were verified live, not assumed: (1)
+   `AdvanceNonceAccount` was first hand-built the same way the other
+   three instructions in `core::instructions` are (matching this repo's
+   "hand-roll the domain-specific encoding" pattern), then cross-checked
+   against the real `solana-system-interface` crate's own
+   `advance_nonce_account` -- it matched byte-for-byte, including a
+   self-verifying test in that crate confirming the RecentBlockhashes
+   sysvar constant. Rather than stop at "confirmed identical," the
+   hand-built version was replaced with a direct call to the official
+   one, removing the transcription risk entirely instead of merely
+   proving it correct once. (2) Reading a durable nonce account's stored
+   value was going to mean hand-transcribing its 80-byte
+   `Versions`/`State`/`Data` bincode layout from memory (offsets for
+   the version/state discriminants, authority, and durable-nonce hash);
+   found the real `solana-nonce` crate exposes those exact types with
+   `serde` support already wired up, so `core::parse_nonce_blockhash`
+   uses that directly instead. SPL Token/Associated-Token-Account/Memo
+   instruction data and account lists are still hand-built in
+   `core::instructions`, matching every other plugin here -- none of
+   those three programs encode instruction data with borsh, so this
+   plugin doesn't depend on it despite the bounty's guidance mentioning
+   it as available.
+   **wasm32-wasip2 verified specifically for this crate's own dependency
+   chain, not assumed to inherit `sns-resolve`'s result** (this chain is
+   materially larger). `wasm-tools component wit` against the real
+   compiled component: `zeroclaw:plugin/types`, `zeroclaw:plugin/logging`,
+   the standard WASI p2 baseline, `wasi:http/*`, and
+   `wasi:random/insecure-seed` (same one addition `sns-resolve` needed,
+   already confirmed satisfied by ZeroClaw's own host wiring) -- nothing
+   else, despite `solana-transaction` pulling in `solana-keypair`, which
+   carries a `wasm-bindgen`/`js-sys` dependency gated on
+   `cfg(target_arch = "wasm32")` (a cfg that doesn't distinguish WASI
+   from browser targets). A raw `strings` scan of the compiled binary
+   confirmed zero `wasm-bindgen`/`js-sys`/`__wbindgen` traces -- this
+   repo's `[profile.release]` (`lto = true`, `codegen-units = 1`) strips
+   the unreachable code path entirely. 23/23 host tests pass (the 5
+   required cases: standard transfer to an existing account, one
+   requiring ATA creation, one with a durable nonce requested, one
+   without, and a structural prompt-injection test that decodes the
+   returned transaction back into a real `solana_transaction::Transaction`
+   and checks the actual encoded amount/destination rather than just
+   this module's own `Output` struct); `cargo clippy -D warnings` clean
+   on host and wasm. `derive_ata` cross-checked against real mainnet RPC
+   data (not just internal self-consistency): the code's own computed
+   address for Wrapped SOL's self-owned associated token account
+   (`5o9nTwSiofKC5DnLiv2gsjPYmGNgh2hAjieyAzyUuwi2`) turned out to be a
+   real, currently-funded mainnet account owned by the SPL Token program
+   with `mint == owner == "So1111...1112"` and `isNative: true` -- a
+   hardcoded "expected" test value typed from memory was wrong and got
+   corrected against this real data instead of trusted.
+   **Live-verified end to end on real devnet, both required paths, run
+   through the actual deployed plugin inside a live ZeroClaw daemon** --
+   full detail in the plugin's own README, "Live devnet verification".
+   Unlike this repo's other live-verification entries, the *signing*
+   step deliberately used a separate, independent piece of code (a
+   standalone `devnet-sign-harness`, outside this repo, using the
+   official `solana-keypair`/`solana-transaction` crates -- playing the
+   role the `solana`/`spl-token` CLIs would, since neither binary is
+   installed on the machine this was tested on): this plugin's own code
+   was never given the private key and never called a signing or
+   submission function. Normal-transfer path: recipient had no wSOL
+   account yet, plugin built the transfer, harness signed and submitted,
+   confirmed on-chain
+   (`5FPhk6wFAEDGKzz1s4QiwWKUvizX4TMT3N43xaPtKZd1wfFUcTAxuJjwwr3y157j16oe2EUixWhBZ2RWxQCNqKCS`),
+   independently re-queried afterward: `err: null`, recipient's brand-new
+   token account held exactly the requested raw amount. Durable-nonce
+   path: created and funded a real nonce account via
+   `solana_system_interface::instruction::create_nonce_account` (only in
+   the external harness, never through this plugin) -- real
+   `getMinimumBalanceForRentExemption(80)` result was 1,447,680 lamports
+   (≈0.00145 SOL), the actual figure now in the README instead of the
+   ~0.0015 SOL estimate this roadmap entry originally noted. Plugin then
+   built a nonce-mode transfer, signed and submitted the same way,
+   confirmed
+   (`5djjZbuo1vKGKErAeGsoc2RqG5iPU187q3GMSpoaMPq7xMM36TxpaRp9DLXBUx4wjhBT5M6CtWkjZRoimeBnVZ4j`),
+   independently re-queried: the nonce account's stored value had
+   actually changed from its post-creation value (direct proof
+   `AdvanceNonceAccount` executed, and executed first -- the runtime
+   rejects a durable-nonce transaction outright otherwise), and the
+   recipient's cumulative wSOL balance was exactly right after both
+   transfers landed. README documents the honest durable-nonce cost
+   (rent measured, not estimated; one nonce account covers exactly one
+   in-flight transaction, must be created by the operator outside this
+   plugin) and includes an MIT LICENSE matching the other four plugins.
 
 **RULE:** step 1 takes priority over everything else, including items
 already "in progress" from before — it's the single highest-leverage
