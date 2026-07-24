@@ -845,6 +845,40 @@ case closely matches the sponsors' own example already. (Full detail:
    (rent measured, not estimated; one nonce account covers exactly one
    in-flight transaction, must be created by the operator outside this
    plugin) and includes an MIT LICENSE matching the other four plugins.
+   **Fail-closed action certification added 2026-07-24, after the
+   above.** `core::build` now re-parses the *exact wire bytes it's
+   about to return* -- not the pre-serialization struct still in
+   memory -- and independently re-derives and re-checks every field
+   that matters against the original request: fee payer,
+   `recent_blockhash`, the advance-nonce instruction (when a durable
+   nonce was requested), the create-ATA instruction (when the
+   recipient's account didn't exist), and the `TransferChecked`
+   instruction's amount/decimals/source/destination/authority/
+   reference, plus the memo instruction's exact bytes -- reading the
+   transaction the same way a wallet or block explorer would (resolving
+   compiled-instruction account indices back to real pubkeys, decoding
+   raw instruction data), never trusting this module's own bookkeeping
+   about what it thinks it just assembled. Any mismatch is a hard error
+   returned instead of the transaction. This is deliberately a second,
+   structurally independent check that runs on **every real call**, not
+   just in `cargo test` -- the point is catching a bug introduced later
+   in instruction construction, message assembly, or serialization
+   itself before this plugin ever hands a human something to sign, not
+   re-proving what the existing host tests already cover. Proven, not
+   just asserted: three new tests deliberately hand-corrupt an
+   already-built, already-*correct* transaction (a mismatched amount, a
+   swapped destination account, a dropped memo instruction) and confirm
+   `certify` rejects each one against the original expected values --
+   a passing test suite alone would only prove today's code happens to
+   be correct, not that the certification step actually catches
+   anything; a fourth test confirms the same correct transaction
+   certifies cleanly, so the negative tests aren't trivially vacuous
+   either. 27/27 host tests pass (4 new); `cargo clippy -D warnings`
+   clean on host and wasm; wasm32-wasip2 release build succeeds with an
+   **unchanged** import surface (pure internal logic, no new
+   dependencies). Redeployed to the live daemon and confirmed a real
+   call still succeeds end to end with certification now running on
+   every invocation, not just the happy-path host tests.
 
 **RULE:** step 1 takes priority over everything else, including items
 already "in progress" from before — it's the single highest-leverage
