@@ -1,0 +1,93 @@
+[package]
+name = "spl-transfer-build"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "T1 ZeroClaw plugin: builds an unsigned SPL token transfer (optional ATA creation, memo, optional durable nonce) for a human to review and sign themselves. Never signs, never submits."
+publish = false
+
+# cdylib for the wasm component; rlib so the pure core is testable on the
+# host with a plain `cargo test`.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Vendored copy, not a path dependency reaching outside this directory --
+# see solana-core/Cargo.toml and tools/sync_solana_core.py for why. Used
+# for base58 Pubkey parsing/formatting and the RPC request/response
+# plumbing, matching the other four plugins. Mint-decimals parsing and
+# ATA/PDA derivation are new needs specific to this plugin and are kept
+# local to this crate's own core module instead (see src/lib.rs), the
+# same way sns-resolve kept its find_program_address usage local rather
+# than growing the shared crate.
+zeroclaw-solana-core = { path = "solana-core" }
+wit-bindgen = "0.46"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The official Solana crates for pubkey/instruction/message/transaction
+# construction and wire-format serialization, per the bounty's verified
+# Tier 3 guidance (see CLAUDE.md) that the modular solana-* crates
+# compile clean to wasm32-wasip2. Verified for THIS crate's own
+# dependency chain, not assumed to carry over from sns-resolve's
+# solana-pubkey-only usage -- see the wasm32-wasip2 verification section
+# in README.md.
+#
+# `curve25519`+`sha2` on solana-pubkey: needed for find_program_address,
+# used twice here -- deriving both the sender's and recipient's
+# associated token account address. Matches sns-resolve's exact feature
+# set for the same underlying reason (a correct PDA needs real
+# curve25519 point-validity math, not hand-rolled hashing).
+solana-pubkey = { version = "2", features = ["curve25519", "sha2"] }
+solana-instruction = "2"
+solana-message = "2"
+# "bincode" turns on this crate's (and solana-message's) serde impls,
+# which match Solana's actual short-vec wire format -- required for
+# `bincode::serialize`/`deserialize` on Transaction/Message to produce
+# and round-trip real transaction bytes. Transitively pulls in
+# solana-system-interface, which this plugin also depends on directly
+# below for its own correctness (see that dependency's comment).
+solana-transaction = { version = "2", features = ["bincode"] }
+solana-hash = "2"
+# Real instruction builders + program/sysvar ID constants for the
+# System program, instead of hand-transcribing
+# `AdvanceNonceAccount`'s discriminant, account order, and the
+# RecentBlockhashes sysvar address from memory -- exactly the kind of
+# thing this repo's CLAUDE.md "traps" section warns hand-rolling risks
+# getting subtly wrong. Already pulled in transitively by
+# solana-transaction's `bincode` feature; declared directly here so
+# this crate's own code can name it.
+solana-system-interface = { version = "1", features = ["bincode"] }
+# Real nonce-account state parsing (the `Versions`/`State`/`Data`
+# on-chain layout an advance-nonce transaction reads its current value
+# from), instead of hand-transcribing byte offsets. "serde" turns on
+# this crate's Deserialize impls, needed to bincode-decode a fetched
+# nonce account's raw bytes.
+solana-nonce = { version = "2", features = ["serde"] }
+bs58 = "0.5"
+base64 = "0.22"
+# Transaction wire-format serialization (short-vec-aware Serialize impls
+# on solana-message::Message / solana-transaction::Transaction) -- this
+# is the actual on-chain wire format Solana has always used for
+# transactions, not borsh (borsh is what on-chain program *instruction*
+# data increasingly uses, but none of the programs this plugin talks to
+# -- SPL Token, SPL Associated Token Account, SPL Memo, System -- encode
+# their own instruction data with borsh; each has its own small
+# hand-packed byte layout, built directly in core::instructions below).
+bincode = "1"
+
+# wasi:http client -- only compiled for the wasm component, never on the
+# host, so `cargo test` never tries to build it. Used for the RPC calls
+# this plugin needs before it can build a transaction: mint decimals,
+# whether the recipient's ATA already exists, and a recent blockhash (or,
+# in durable-nonce mode, the nonce account's current stored value).
+[target.'cfg(target_family = "wasm")'.dependencies]
+waki = { version = "0.5.1", features = ["json"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+
+# Standalone crate: built for wasm32-wasip2, not part of any host workspace.
+[workspace]
