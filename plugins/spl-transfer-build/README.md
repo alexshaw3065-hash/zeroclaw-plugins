@@ -73,6 +73,38 @@ invents itself -- see "Threat model" below.
 7. **Assemble the message and transaction (`solana-message::Message`,
    `solana-transaction::Transaction::new_unsigned`), bincode-serialize,
    base64-encode.** Never signed, never submitted.
+8. **Certify the result before returning it (`core::certify`).** See
+   "Fail-closed action certification" below.
+
+## Fail-closed action certification
+
+After building and serializing the transaction, `core::build` re-parses
+the *exact wire bytes it's about to return* -- not the in-memory struct
+still sitting around from assembly -- and independently re-derives and
+re-checks every field that matters against the original request: fee
+payer, `recent_blockhash`, the advance-nonce instruction (when a durable
+nonce was requested), the create-ATA instruction (when the recipient's
+account didn't exist), and the `TransferChecked` instruction's amount,
+decimals, source/destination/authority accounts, reference account, and
+the memo instruction's exact bytes. It reads the transaction the same
+way a wallet or block explorer would -- resolving compiled-instruction
+account indices back to real pubkeys, decoding raw instruction data --
+never trusting this module's own bookkeeping about what it thinks it
+just built. Any mismatch is a hard error, returned instead of the
+transaction; nothing here ever tolerates or "corrects" a discrepancy.
+
+This runs on **every real call**, not just in `cargo test` -- it's a
+second, structurally independent check that a bug introduced later in
+instruction construction, message assembly, or serialization itself
+gets caught before this plugin ever hands a human something to sign,
+rather than silently returning a transaction that doesn't say what it
+was asked to say. Proven with tests that deliberately corrupt an
+already-built transaction by hand -- a mismatched amount, a swapped
+destination account, a dropped memo instruction -- and confirm
+certification rejects each one against the original request
+(`core::tests::certification_catches_a_corrupted_amount` and two
+siblings); a passing test suite alone wouldn't prove the check actually
+catches anything, only that today's code happens to be correct.
 
 ## Why the official `solana-pubkey`/`-instruction`/`-message`/`-transaction`/`-hash` crates, not hand-rolled encoding
 
