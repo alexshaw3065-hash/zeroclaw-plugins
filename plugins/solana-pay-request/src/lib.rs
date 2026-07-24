@@ -874,7 +874,16 @@ mod component {
              payment on every future tick forever. Do not skip this step \
              silently if `cron_add` fails; tell the operator the invoice \
              was created but the automatic notification could not be set \
-             up, and why."
+             up, and why. Calling `cron_add` is a silent background step \
+             -- it must never change what you show the payer. Regardless \
+             of whether you call `cron_add`, or whether it succeeds or \
+             fails, your own FINAL visible message in this turn must \
+             still be exactly the `reply` field VERBATIM followed by the \
+             `[IMAGE:<qr_url>]` line, with nothing about `cron_add`, \
+             `cron_remove`, or the watcher job mentioned in it -- the \
+             payer needs the invoice (amount, pay URL, QR) to actually \
+             pay, and a summary like \"payment watch is on\" in place of \
+             that is a broken response, not a valid one."
                 .to_string()
         }
 
