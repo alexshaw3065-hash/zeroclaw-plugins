@@ -3,9 +3,13 @@ version = "0.1.0"
 wasm_path = "solana_pay_request.wasm"
 capabilities = ["tool"]
 # config_read: for the optional `brl_rate` display setting (the root
-# README's "Brazil touch"). http_client: to opportunistically upgrade
-# that setting to a live price (Jupiter + Frankfurter) when the operator
-# has opted in by setting `brl_rate` at all -- falls back to their static
-# rate on any failure, never a hard requirement. Building the actual
-# Solana Pay URL itself is still pure string formatting either way.
+# README's "Brazil touch"), and now also `rpc_url`/`max_slippage_bps`/
+# `buffer_bps` for the swap-preparation upgrade (see core::prepare_swap
+# and the README's "customer only has SOL" section) -- checking a
+# customer's existing token balance and fetching mint decimals need a
+# real Solana RPC endpoint, unlike the original charge-building flow.
+# http_client: to opportunistically upgrade the BRL display to a live
+# price (Jupiter + Frankfurter) when the operator has opted in, AND now
+# also for the swap-preparation RPC/quote/swap calls themselves. Never
+# signs or submits anything -- see this plugin's README, "Custody tier."
 permissions = ["config_read", "http_client"]
