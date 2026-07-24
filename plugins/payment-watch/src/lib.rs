@@ -578,6 +578,14 @@ pub mod core {
                 level.to_uppercase(),
                 output.risk_reasons.join("; "),
             ));
+            // Only present when `brl_estimate` is `Some` -- an operator
+            // who never sets `brl_rate` sees the exact same reply as
+            // before this line existed. `brl_estimate` is only ever
+            // populated on the "paid" path (see `confirm`), matching
+            // where this line is inserted.
+            if let Some(estimate) = &output.brl_estimate {
+                lines.push(format!("Est.: {estimate}"));
+            }
             lines.push(
                 match level {
                     "green" => "Verdict: PAYMENT VERIFIED — safe to trust.",
@@ -952,6 +960,22 @@ pub mod core {
             let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
             let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, Some(5.60));
             assert_eq!(out.brl_estimate.as_deref(), Some("R$140.00"));
+        }
+
+        #[test]
+        fn reply_includes_an_est_line_when_brl_estimate_is_present() {
+            let observed = spl_transfer(25_000_000);
+            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, Some(5.60));
+            assert!(out.reply.contains("Est.: R$140.00"));
+        }
+
+        #[test]
+        fn reply_has_no_est_line_when_brl_estimate_is_absent() {
+            let observed = spl_transfer(25_000_000);
+            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, None);
+            assert!(!out.reply.contains("Est.:"));
         }
 
         #[test]

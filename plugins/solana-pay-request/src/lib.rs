@@ -279,8 +279,15 @@ pub mod core {
     /// instead of wrapping mid-address as plain paragraph text.
     fn format_reply(output: &Output) -> String {
         let reference = output.reference.as_deref().unwrap_or("(none)");
+        // BRL line is only present when `brl_estimate` is `Some` -- an
+        // operator who never sets `brl_rate` sees the exact same reply
+        // as before this line existed, no empty/placeholder row.
+        let brl_line = match &output.brl_estimate {
+            Some(estimate) => format!("Est.: {estimate}\n"),
+            None => String::new(),
+        };
         format!(
-            "Invoice Created\nInvoice: {reference}\nAmount: {} {}\nRecipient: {}\nPay URL: `{}`\nWaiting for payment...",
+            "Invoice Created\nInvoice: {reference}\nAmount: {} {}\n{brl_line}Recipient: {}\nPay URL: `{}`\nWaiting for payment...",
             output.amount,
             asset_label(&output.mint),
             short_addr(&output.recipient),
@@ -571,6 +578,18 @@ pub mod core {
             let output = run(&base_args(), Some(5.60), &Guardrails::default()).unwrap();
             assert!(!output.url.contains("brl"));
             assert!(!output.url.contains("R$"));
+        }
+
+        #[test]
+        fn reply_includes_an_est_line_when_brl_estimate_is_present() {
+            let output = run(&base_args(), Some(5.60), &Guardrails::default()).unwrap();
+            assert!(output.reply.contains("Est.: R$140.00\n"));
+        }
+
+        #[test]
+        fn reply_has_no_est_line_when_brl_estimate_is_absent() {
+            let output = run(&base_args(), None, &Guardrails::default()).unwrap();
+            assert!(!output.reply.contains("Est.:"));
         }
 
         #[test]
