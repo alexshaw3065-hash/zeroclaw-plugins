@@ -420,11 +420,196 @@ pub mod core {
         }
     }
 
+    /// A snapshot of every value [`certify`] independently checks an
+    /// assembled transaction against. Built once in [`build`] from the
+    /// same parsed args/facts the instructions themselves were
+    /// assembled from -- certification re-derives its expectations from
+    /// that same source of truth, it doesn't invent a second one.
+    struct ExpectedTransfer {
+        sender: [u8; 32],
+        recipient: [u8; 32],
+        mint: [u8; 32],
+        source_ata: [u8; 32],
+        destination_ata: [u8; 32],
+        raw_amount: u64,
+        decimals: u8,
+        reference: Option<[u8; 32]>,
+        memo: Option<String>,
+        creates_destination_account: bool,
+        uses_durable_nonce: bool,
+        nonce_account: Option<[u8; 32]>,
+        nonce_authority: [u8; 32],
+        blockhash: [u8; 32],
+    }
+
+    type CompiledInstruction = solana_message::compiled_instruction::CompiledInstruction;
+
+    /// Fail-closed action certification. `build` calls this on a
+    /// transaction re-parsed from the *exact wire bytes* it's about to
+    /// return -- not the pre-serialization struct still in memory --
+    /// and independently re-derives and re-checks every field that
+    /// matters against what was actually requested, reading it the same
+    /// way a wallet or block explorer would: resolving compiled-
+    /// instruction account indices back to real pubkeys and decoding
+    /// raw instruction bytes, never trusting this module's own
+    /// bookkeeping. This is a second, structurally independent check on
+    /// top of the host tests -- it runs on every real call, not just in
+    /// `cargo test` -- so a bug introduced anywhere in instruction
+    /// construction, message assembly, or serialization itself is
+    /// caught here and turned into a hard error before this plugin ever
+    /// hands a human something to sign, rather than silently returning
+    /// a transaction that doesn't say what it was asked to say. Any
+    /// mismatch is an error; nothing here ever tolerates or "corrects"
+    /// a discrepancy. See
+    /// `tests::certification_catches_a_corrupted_transaction` for proof
+    /// this actually rejects a mismatched result, not just happy-path
+    /// input.
+    fn certify(tx: &solana_transaction::Transaction, expected: &ExpectedTransfer) -> Result<(), CoreError> {
+        let keys = &tx.message.account_keys;
+        let key_at = |idx: usize| -> Result<solana_pubkey::Pubkey, CoreError> {
+            keys.get(idx)
+                .copied()
+                .ok_or_else(|| bad("certification failed: account index out of range"))
+        };
+        let account_at = |ix: &CompiledInstruction, pos: usize| -> Result<solana_pubkey::Pubkey, CoreError> {
+            let idx = *ix
+                .accounts
+                .get(pos)
+                .ok_or_else(|| bad("certification failed: instruction has fewer accounts than expected"))?;
+            key_at(idx as usize)
+        };
+        let program_of = |ix: &CompiledInstruction| -> Result<solana_pubkey::Pubkey, CoreError> {
+            key_at(ix.program_id_index as usize)
+        };
+
+        if key_at(0)? != sdk_pubkey(&expected.sender) {
+            return Err(bad("certification failed: fee payer does not match the requested sender"));
+        }
+        if tx.message.recent_blockhash != solana_hash::Hash::new_from_array(expected.blockhash) {
+            return Err(bad("certification failed: recent_blockhash does not match"));
+        }
+
+        let instrs = &tx.message.instructions;
+        let mut idx = 0usize;
+
+        if expected.uses_durable_nonce {
+            let ix = instrs
+                .get(idx)
+                .ok_or_else(|| bad("certification failed: missing advance-nonce instruction"))?;
+            if program_of(ix)? != sdk_pubkey(&SYSTEM_PROGRAM_ID) {
+                return Err(bad("certification failed: advance-nonce instruction targets the wrong program"));
+            }
+            if ix.data != 4u32.to_le_bytes() {
+                return Err(bad("certification failed: advance-nonce instruction has the wrong data"));
+            }
+            let expected_nonce = expected
+                .nonce_account
+                .ok_or_else(|| bad("certification failed: durable nonce expected but no nonce_account was given"))?;
+            if account_at(ix, 0)? != sdk_pubkey(&expected_nonce) {
+                return Err(bad("certification failed: advance-nonce targets the wrong nonce account"));
+            }
+            if account_at(ix, 2)? != sdk_pubkey(&expected.nonce_authority) {
+                return Err(bad("certification failed: advance-nonce authority does not match"));
+            }
+            idx += 1;
+        }
+
+        if expected.creates_destination_account {
+            let ix = instrs
+                .get(idx)
+                .ok_or_else(|| bad("certification failed: missing create-ATA instruction"))?;
+            if program_of(ix)? != sdk_pubkey(&const_pubkey(ASSOCIATED_TOKEN_PROGRAM_ID)) {
+                return Err(bad("certification failed: create-ATA instruction targets the wrong program"));
+            }
+            if account_at(ix, 0)? != sdk_pubkey(&expected.sender)
+                || account_at(ix, 1)? != sdk_pubkey(&expected.destination_ata)
+                || account_at(ix, 2)? != sdk_pubkey(&expected.recipient)
+                || account_at(ix, 3)? != sdk_pubkey(&expected.mint)
+            {
+                return Err(bad("certification failed: create-ATA instruction accounts do not match the request"));
+            }
+            idx += 1;
+        }
+
+        let transfer_ix = instrs
+            .get(idx)
+            .ok_or_else(|| bad("certification failed: missing transfer instruction"))?;
+        if program_of(transfer_ix)? != sdk_pubkey(&const_pubkey(TOKEN_PROGRAM_ID)) {
+            return Err(bad("certification failed: transfer instruction targets the wrong program"));
+        }
+        if transfer_ix.data.len() != 10 || transfer_ix.data[0] != 12 {
+            return Err(bad("certification failed: transfer instruction is not a well-formed TransferChecked"));
+        }
+        let encoded_amount = u64::from_le_bytes(transfer_ix.data[1..9].try_into().unwrap());
+        if encoded_amount != expected.raw_amount {
+            return Err(bad(format!(
+                "certification failed: encoded amount {encoded_amount} does not match the requested {}",
+                expected.raw_amount
+            )));
+        }
+        if transfer_ix.data[9] != expected.decimals {
+            return Err(bad("certification failed: encoded decimals do not match the mint's real decimals"));
+        }
+        if account_at(transfer_ix, 0)? != sdk_pubkey(&expected.source_ata) {
+            return Err(bad("certification failed: transfer source does not match the sender's token account"));
+        }
+        if account_at(transfer_ix, 1)? != sdk_pubkey(&expected.mint) {
+            return Err(bad("certification failed: transfer mint does not match the requested mint"));
+        }
+        if account_at(transfer_ix, 2)? != sdk_pubkey(&expected.destination_ata) {
+            return Err(bad(
+                "certification failed: transfer destination does not match the recipient's token account",
+            ));
+        }
+        if account_at(transfer_ix, 3)? != sdk_pubkey(&expected.sender) {
+            return Err(bad("certification failed: transfer authority does not match the requested sender"));
+        }
+        match expected.reference {
+            Some(reference) => {
+                if transfer_ix.accounts.len() != 5 {
+                    return Err(bad("certification failed: transfer instruction has an unexpected number of accounts"));
+                }
+                if account_at(transfer_ix, 4)? != sdk_pubkey(&reference) {
+                    return Err(bad(
+                        "certification failed: transfer reference account does not match the requested reference",
+                    ));
+                }
+            }
+            None => {
+                if transfer_ix.accounts.len() != 4 {
+                    return Err(bad("certification failed: transfer instruction has an unexpected extra account"));
+                }
+            }
+        }
+        idx += 1;
+
+        if let Some(memo_text) = &expected.memo {
+            let ix = instrs
+                .get(idx)
+                .ok_or_else(|| bad("certification failed: missing memo instruction"))?;
+            if program_of(ix)? != sdk_pubkey(&const_pubkey(MEMO_PROGRAM_ID)) {
+                return Err(bad("certification failed: memo instruction targets the wrong program"));
+            }
+            if ix.data != memo_text.as_bytes() {
+                return Err(bad("certification failed: memo instruction data does not match the requested memo"));
+            }
+            idx += 1;
+        }
+
+        if idx != instrs.len() {
+            return Err(bad("certification failed: transaction contains more instructions than expected"));
+        }
+
+        Ok(())
+    }
+
     /// The whole plugin, minus I/O. Takes already-parsed args and
     /// already-fetched [`Facts`], returns the assembled unsigned
     /// transaction. No argument here can reach `recipient` or `amount`
     /// through any path except their own typed fields -- see
-    /// `tests::prompt_injection_cannot_alter_the_transfer`.
+    /// `tests::prompt_injection_cannot_alter_the_transfer`. The
+    /// transaction is also independently re-certified after assembly --
+    /// see `certify` -- before this function ever returns it.
     pub fn build(args: &Args, facts: &Facts) -> Result<Output, CoreError> {
         let sender = Pubkey::parse(&args.sender).map_err(|e| bad(format!("invalid sender: {e}")))?;
         let recipient =
@@ -494,6 +679,36 @@ pub mod core {
         let tx = solana_transaction::Transaction::new_unsigned(message);
         let wire_bytes =
             bincode::serialize(&tx).map_err(|e| bad(format!("failed to serialize transaction: {e}")))?;
+
+        // Fail-closed action certification: re-parse the *exact bytes*
+        // about to be returned (not the `tx` object still in memory)
+        // and independently verify every field against the request,
+        // before this function is allowed to return successfully. See
+        // `certify`'s own doc comment for why this exists on top of the
+        // host test suite.
+        let recertified: solana_transaction::Transaction = bincode::deserialize(&wire_bytes).map_err(|e| {
+            bad(format!(
+                "certification failed: could not re-parse the transaction this function just serialized: {e}"
+            ))
+        })?;
+        let expected = ExpectedTransfer {
+            sender: sender.0,
+            recipient: recipient.0,
+            mint: mint.0,
+            source_ata,
+            destination_ata,
+            raw_amount,
+            decimals: facts.decimals,
+            reference: reference.as_ref().map(|r| r.0),
+            memo: args.memo.clone(),
+            creates_destination_account: !facts.recipient_ata_exists,
+            uses_durable_nonce,
+            nonce_account: nonce_account.as_ref().map(|n| n.0),
+            nonce_authority: nonce_authority.as_ref().unwrap_or(&sender).0,
+            blockhash: facts.blockhash,
+        };
+        certify(&recertified, &expected)?;
+
         use base64::Engine;
         let transaction_base64 = base64::engine::general_purpose::STANDARD.encode(wire_bytes);
 
@@ -578,6 +793,36 @@ pub mod core {
                 .decode(&output.transaction_base64)
                 .expect("valid base64");
             bincode::deserialize(&bytes).expect("valid transaction wire bytes")
+        }
+
+        /// The same derivation `build` itself does, exposed here so
+        /// certification tests can construct an `ExpectedTransfer`
+        /// independently of calling `build` -- needed to test `certify`
+        /// directly against a deliberately corrupted transaction.
+        fn expected_for(args: &Args, facts: &Facts) -> ExpectedTransfer {
+            let sender = Pubkey::parse(&args.sender).unwrap();
+            let recipient = Pubkey::parse(&args.recipient).unwrap();
+            let mint = Pubkey::parse(&args.mint).unwrap();
+            ExpectedTransfer {
+                sender: sender.0,
+                recipient: recipient.0,
+                mint: mint.0,
+                source_ata: derive_ata(&sender.0, &mint.0),
+                destination_ata: derive_ata(&recipient.0, &mint.0),
+                raw_amount: to_raw_amount(&args.amount, facts.decimals).unwrap(),
+                decimals: facts.decimals,
+                reference: args.reference.as_deref().map(|r| Pubkey::parse(r).unwrap().0),
+                memo: args.memo.clone(),
+                creates_destination_account: !facts.recipient_ata_exists,
+                uses_durable_nonce: args.nonce_account.is_some(),
+                nonce_account: args.nonce_account.as_deref().map(|n| Pubkey::parse(n).unwrap().0),
+                nonce_authority: args
+                    .nonce_authority
+                    .as_deref()
+                    .map(|n| Pubkey::parse(n).unwrap().0)
+                    .unwrap_or(sender.0),
+                blockhash: facts.blockhash,
+            }
         }
 
         // ---- amount parsing ---------------------------------------------
@@ -876,6 +1121,111 @@ pub mod core {
         #[test]
         fn parse_nonce_blockhash_fails_closed_on_garbage_bytes() {
             assert!(parse_nonce_blockhash(&[1, 2, 3]).is_err());
+        }
+
+        // ---- fail-closed action certification ------------------------------
+
+        /// A correctly built transaction certifies cleanly against its
+        /// own expected values. Not just an implicit side effect of
+        /// `build` succeeding elsewhere in this file (`build` already
+        /// returns `Err` if certification fails, so every passing test
+        /// above already exercises the happy path) -- asserted directly
+        /// here so this section stands on its own next to the negative
+        /// case below.
+        #[test]
+        fn certification_passes_on_a_correctly_built_transaction() {
+            let a = args(|ag| {
+                ag.memo = Some("invoice #42".to_string());
+                ag.reference = Some(RECIPIENT.to_string());
+            });
+            let f = facts(false);
+            let out = build(&a, &f).unwrap();
+            let tx = decode(&out);
+            let expected = expected_for(&a, &f);
+            assert!(certify(&tx, &expected).is_ok());
+        }
+
+        /// The actual proof this catches corruption, not just happy-path
+        /// input: takes a real, correctly built transaction and mutates
+        /// its already-serialized `TransferChecked` amount directly --
+        /// the same kind of thing a bug in instruction construction,
+        /// message assembly, or serialization could produce -- then
+        /// confirms `certify` rejects it against the *original* expected
+        /// values. `build` itself never produces this transaction; this
+        /// test constructs the corruption by hand specifically to verify
+        /// the certification logic notices.
+        #[test]
+        fn certification_catches_a_corrupted_amount() {
+            let a = args(|_| {});
+            let f = facts(true);
+            let out = build(&a, &f).unwrap();
+            let mut tx = decode(&out);
+            let expected = expected_for(&a, &f);
+            assert!(certify(&tx, &expected).is_ok(), "sanity check: the real transaction must certify first");
+
+            let transfer_ix_index = tx
+                .message
+                .instructions
+                .iter()
+                .position(|ix| {
+                    tx.message.account_keys[ix.program_id_index as usize]
+                        == solana_pubkey::Pubkey::new_from_array(const_pubkey(TOKEN_PROGRAM_ID))
+                        && ix.data.first() == Some(&12u8)
+                })
+                .unwrap();
+            tx.message.instructions[transfer_ix_index].data[1..9]
+                .copy_from_slice(&999_999_999u64.to_le_bytes());
+
+            let result = certify(&tx, &expected);
+            assert!(result.is_err());
+        }
+
+        /// Same proof, a different field: the destination account gets
+        /// swapped for an unrelated address after the fact.
+        #[test]
+        fn certification_catches_a_corrupted_destination_account() {
+            let a = args(|_| {});
+            let f = facts(true);
+            let out = build(&a, &f).unwrap();
+            let mut tx = decode(&out);
+            let expected = expected_for(&a, &f);
+
+            let transfer_ix_index = tx
+                .message
+                .instructions
+                .iter()
+                .position(|ix| {
+                    tx.message.account_keys[ix.program_id_index as usize]
+                        == solana_pubkey::Pubkey::new_from_array(const_pubkey(TOKEN_PROGRAM_ID))
+                        && ix.data.first() == Some(&12u8)
+                })
+                .unwrap();
+            let destination_index = tx.message.instructions[transfer_ix_index].accounts[2];
+            // Swap in a plausible-looking but wrong address -- the mint's
+            // own address, reused here purely as a different valid pubkey.
+            tx.message.account_keys[destination_index as usize] =
+                solana_pubkey::Pubkey::new_from_array(const_pubkey(MINT));
+
+            let result = certify(&tx, &expected);
+            assert!(result.is_err());
+        }
+
+        /// And a missing instruction entirely -- the memo silently
+        /// dropped after assembly, the kind of bug a refactor could
+        /// introduce without touching amount/account logic at all.
+        #[test]
+        fn certification_catches_a_dropped_memo_instruction() {
+            let a = args(|ag| ag.memo = Some("invoice #42".to_string()));
+            let f = facts(true);
+            let out = build(&a, &f).unwrap();
+            let mut tx = decode(&out);
+            let expected = expected_for(&a, &f);
+            assert_eq!(tx.message.instructions.len(), 2); // transfer + memo
+
+            tx.message.instructions.pop(); // drop the memo instruction
+
+            let result = certify(&tx, &expected);
+            assert!(result.is_err());
         }
     }
 }
