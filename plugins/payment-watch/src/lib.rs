@@ -1187,7 +1187,12 @@ mod component {
         }
 
         fn description() -> String {
-            "Checks whether an expected Solana payment has landed: watches a \
+            "Call this with EXACTLY these argument names -- `recipient`, \
+             `amount`, `mint`, `reference` -- and no others. Never rename or \
+             invent field names (e.g. `recipient_amount`, `token_mint`, \
+             `payment_reference`, `recipient_wallet_address`); the call \
+             fails closed if you do. Checks whether an expected Solana \
+             payment has landed: watches a \
              recipient address for a given amount (native SOL or an SPL token \
              mint), correlated by a Solana Pay reference. When a matching \
              transfer is found, it automatically screens the paying token for \

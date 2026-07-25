@@ -882,15 +882,28 @@ mod component {
              \"agent\", allowed_tools [\"payment-watch\", \"cron_remove\"], \
              delivery {\"mode\":\"announce\",\"channel\":\"telegram.default\",\
              \"to\":\"8941833064\"}, and a prompt telling the scheduled run \
-             to call payment-watch with those exact recipient/amount/\
-             reference values, respond with payment-watch's `reply` field \
-             verbatim if status is paid AND THEN call cron_remove on this \
-             same job's own id to stop further polling, or respond with \
-             exactly the literal text NO_REPLY (nothing else) if status is \
-             pending. This makes the notification genuinely one-shot per \
-             invoice: it fires once when paid, then removes itself -- \
-             without the cron_remove step it will re-announce the same \
-             payment on every future tick forever. Do not skip this step \
+             to call payment-watch using a real native tool call -- not by \
+             writing JSON as plain text in your response -- with EXACTLY \
+             these three argument names and no others: `recipient`, \
+             `amount`, `reference` (never `recipient_amount`, `token_mint`, \
+             `payment_reference`, `recipient_wallet_address`, or any other \
+             invented name; those are not real fields and the call will \
+             fail). Respond with payment-watch's `reply` field verbatim if \
+             status is paid AND THEN call cron_remove on this same job's \
+             own id to stop further polling. If status is pending, OR if \
+             the payment-watch call fails or errors for any reason \
+             (wrong/missing arguments, a tool error, anything at all), \
+             respond with exactly the literal text NO_REPLY and nothing \
+             else -- never explain the failure, never ask for \
+             clarification, never describe what went wrong; a failed tick \
+             must be silent and simply retried next time, not surfaced to \
+             the payer as an unprompted, confusing message. This makes the \
+             notification genuinely one-shot per invoice: it fires once \
+             when paid, then removes itself -- without the cron_remove \
+             step it will re-announce the same payment on every future \
+             tick forever, and without the fail-to-NO_REPLY rule a single \
+             malformed tool call becomes an unprompted, garbled message \
+             landing in the payer's chat. Do not skip this step \
              silently if `cron_add` fails; tell the operator the invoice \
              was created but the automatic notification could not be set \
              up, and why. Calling `cron_add` is a silent background step \
