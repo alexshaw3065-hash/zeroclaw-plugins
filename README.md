@@ -15,7 +15,13 @@ Solana, submitted to the *"Build Solana-native plugins for ZeroClaw"*
 bounty (Superteam Brasil).
 
 The actual showcase write-up lives at [`SHOWCASE.md`](./SHOWCASE.md) —
-this README is the deeper technical reference behind it.
+this README is the deeper technical reference behind it. Three focused
+docs go deeper still on specific topics covered below:
+[`CUSTODY.md`](./CUSTODY.md) (the full custody ladder, correct-layering
+defense, and third-party trust declaration),
+[`REPRODUCIBILITY.md`](./REPRODUCIBILITY.md) (the complete setup
+walkthrough), and [`WASM_NOTES.md`](./WASM_NOTES.md) (what building this
+in wasm actually surfaced, mapped to the bounty's own named traps).
 
 **Who this is for:** a small merchant — a table-service restaurant, a
 market stall, a shop with a WhatsApp/Telegram presence already — who
