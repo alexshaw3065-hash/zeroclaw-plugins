@@ -50,11 +50,12 @@ for seven real, passing tests proving none of this can be talked around.
 
 ## Is this actually running?
 
-Yes. Right now, not as a demo-day exception — currently configured
-against **devnet** (a real Helius RPC endpoint, real on-chain state,
-just not real customer money yet), matching how every plugin here was
-built and verified. Moving to mainnet is a one-line `rpc_url` config
-change per plugin, not a rebuild, whenever real payments are wanted.
+Yes. Right now, not as a demo-day exception — configured against
+**mainnet** (a real Helius RPC endpoint). Every plugin here was
+originally built and verified against devnet (see "Live verification,"
+below, for that historical record); the live deployment now runs on
+mainnet, so payments through it are real. Switching networks was a
+one-line `rpc_url` config change per plugin, not a rebuild.
 
 - A real Telegram bot (`@Veepaymenttweminal_bot`), backed by a real
   ZeroClaw daemon, installed as a **persistent Windows scheduled task**
@@ -318,19 +319,24 @@ access required:
 
 ## Live verification (not just mocked tests)
 
-Every plugin has been run against real chain data at least once — full
-detail and real transaction signatures/addresses in each plugin's own
-README — including: a real scam-shaped Token-2022 mint correctly
-flagged red on live devnet; a real devnet payment correctly reported
-"paid" but flagged red because it arrived in that same dangerous mint;
-a real Solana Pay QR code scanned and recognized correctly by a live
-wallet (Solflare); two real signed-and-confirmed devnet SPL transfers
-via `spl-transfer-build` (a normal transfer and a durable-nonce
-transfer), signed entirely outside this repo's code; a real mainnet
-`.sol` domain resolution matching the upstream SNS SDK's own published
-test vectors; and a real, unprompted "payment confirmed" Telegram
-message delivered by `zeroclaw cron` seconds after a real devnet
-transfer landed, with zero chat interaction.
+Every plugin has been run against real chain data at least once during
+development — full detail and real transaction signatures/addresses in
+each plugin's own README — including: a real scam-shaped Token-2022
+mint correctly flagged red on live devnet; a real devnet payment
+correctly reported "paid" but flagged red because it arrived in that
+same dangerous mint; a real Solana Pay QR code scanned and recognized
+correctly by a live wallet (Solflare); two real signed-and-confirmed
+devnet SPL transfers via `spl-transfer-build` (a normal transfer and a
+durable-nonce transfer), signed entirely outside this repo's code; a
+real mainnet `.sol` domain resolution matching the upstream SNS SDK's
+own published test vectors; and a real, unprompted "payment confirmed"
+Telegram message delivered by `zeroclaw cron` seconds after a real
+devnet transfer landed, with zero chat interaction.
+
+**Since moving the live deployment to mainnet**, re-confirmed against
+real mainnet data, not just re-tested against mocks: `sns-resolve` on
+the actual running bot resolved `bonfida.sol` →
+`Fw1ETanDZafof7xEULsnq9UY6o71Tpds89tNwPkWLb1v`, live, on request.
 
 ## License
 
