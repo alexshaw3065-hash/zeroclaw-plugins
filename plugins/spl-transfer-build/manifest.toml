@@ -1,0 +1,18 @@
+# See README.md for the custody tier writeup and threat model this
+# manifest is meant to enforce.
+
+name = "spl-transfer-build"
+version = "0.1.0"
+wasm_path = "spl_transfer_build.wasm"
+
+capabilities = ["tool"]
+
+# http_client: to call the user's configured Solana RPC endpoint (mint
+# decimals, whether the recipient's ATA already exists, a recent
+# blockhash or a durable nonce account's current value -- all reads).
+# config_read: to read that RPC endpoint from config.
+# This plugin never signs and never submits a transaction -- it only
+# ever returns an unsigned transaction (base64) for a human to review
+# and sign themselves. No permission requested here can move funds on
+# its own.
+permissions = ["http_client", "config_read"]
