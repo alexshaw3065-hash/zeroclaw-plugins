@@ -152,6 +152,17 @@ rather than skills, is the fused, unconditional risk check described
 above — an LLM-driven skill cannot *guarantee* a second check always
 runs; a direct Rust function call can, and does.
 
+**One thing we deliberately didn't use, worth naming plainly:** ZeroClaw's
+SOP approval-checkpoint feature (a run pausing until a human explicitly
+approves a step). Every T1 plugin here routes approval through the
+*wallet* instead — a human reviews and signs a real transaction or scans
+a real QR code, rather than clicking "approve" inside a ZeroClaw SOP run.
+That's a legitimate, equally real gate (nothing moves without the
+human's own signature either way), but it means this submission never
+exercises that specific ZeroClaw feature, and there's no refund/reversal
+flow anywhere in this repo to demonstrate it against. Said outright
+rather than implied.
+
 ---
 
 ## The named traps, and what we actually did about them
