@@ -18,6 +18,33 @@ zeroclaw-solana-core = { path = "solana-core" }
 wit-bindgen = "0.46"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Added for the "customer only has SOL" swap-preparation upgrade (see
+# core::prepare_swap). Unlike spl-transfer-build, this plugin never
+# *constructs* an instruction from scratch -- Jupiter's own /swap
+# endpoint returns a ready-built legacy transaction (requested via
+# `asLegacyTransaction: true`, confirmed live to deserialize cleanly as
+# a plain `solana_transaction::Transaction`, avoiding any need for
+# versioned-transaction/address-lookup-table support). This plugin only
+# ever *reads* that transaction back to certify it, and derives the
+# customer's own associated token account to check their existing
+# balance -- so the production dependency set is smaller than
+# spl-transfer-build's: no solana-system-interface/-nonce (no
+# durable-nonce path here), and no solana-instruction in production
+# code (nothing is built by hand) -- it's a dev-dependency only, below,
+# used to construct fixture transactions in certify_swap's tests.
+solana-pubkey = { version = "2", features = ["curve25519", "sha2"] }
+solana-message = { version = "2", features = ["bincode"] }
+solana-transaction = { version = "2", features = ["bincode"] }
+bincode = "1"
+base64 = "0.22"
+
+[dev-dependencies]
+# Test-only: build fixture instructions/transactions for certify_swap's
+# tests. Never used in production code -- this plugin never constructs
+# a swap instruction or a blockhash itself, only reads a transaction
+# back from Jupiter.
+solana-instruction = "2"
+solana-hash = "2"
 
 # wasi:http client -- only compiled for the wasm component, never on the
 # host, so `cargo test` never tries to build it. Used only to

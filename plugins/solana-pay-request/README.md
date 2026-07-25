@@ -245,6 +245,218 @@ the whole message itself, marker included). This is the one line the
 agent still composes; everything else in `reply` stays fully
 deterministic.
 
+## Swap preparation: when the customer only has SOL
+
+An upgrade to this same tool -- not a separate plugin (`wit/v0/tool.wit`
+is explicit that a component exporting `tool` is a single-tool plugin,
+so this lives inside solana-pay-request's one tool identity, dispatched
+by whether `customer_wallet` is present in the call). For when a
+customer needs to pay a charge in a specific token but their wallet only
+holds SOL: instead of failing, this **prepares an unsigned swap
+transaction** -- converting just enough SOL into the requested token --
+for the customer's own wallet to review and approve themselves.
+
+**Say this plainly, every time: this plugin never trades, decides, or
+executes anything.** It only ever *prepares* a transaction a human still
+has to review and sign in their own wallet, exactly like every other
+output in this repo. Every reply string and every line of this plugin's
+tool description says "preparing a swap for you to approve," never "the
+agent will swap/trade this for you" -- deliberately, given how close
+this sits to the bounty's explicit exclusion of trading bots.
+
+### Custody tier: still T1
+
+Nothing about this path changes the custody boundary. It never signs,
+never submits, never holds a key -- it returns bytes, the same as the
+charge-building path returns a URL. The only difference from the rest
+of this plugin is that it now needs a real RPC endpoint (to check a
+balance and fetch decimals) and makes two outbound HTTP calls to
+Jupiter (`/quote`, then `/swap`) -- both already covered by the
+`http_client`/`config_read` permissions this plugin already had.
+
+### Config keys (swap-specific)
+
+| Key | Required | Description |
+|---|---|---|
+| `rpc_url` | yes, for this path only | A Solana **mainnet** RPC endpoint -- Jupiter has no devnet presence (confirmed live: a `cluster=devnet` query param is silently ignored, and there's no real devnet DEX liquidity to aggregate regardless). The normal charge-building path never needed an RPC endpoint at all; this is new, and it must point at mainnet specifically for a real customer's real balance/swap to mean anything. |
+| `max_slippage_bps` | no | Maximum acceptable price impact, in basis points. Default `100` (1%). **Capped at 500 (5%) in code (`ABSOLUTE_MAX_SLIPPAGE_BPS`) regardless of what's configured** -- a misconfigured or tampered-with value can't silently become "no limit." |
+| `buffer_bps` | no | Extra basis points requested on top of the exact payment amount, for fee/margin headroom. Default `50` (0.5%). **Capped at 200 (2%) in code (`ABSOLUTE_MAX_BUFFER_BPS`)** -- same reasoning. |
+
+`max_amount`/`mint_allowlist` (above) apply here too, unchanged --
+`core::prepare_swap` re-checks them against the same amount/mint a swap
+targets.
+
+### How it works
+
+1. Fetch the target mint's `decimals` (`getAccountInfo`) --
+   `core::parse_mint_decimals`, a fresh, plugin-local copy of the same
+   fixed-offset read `spl-transfer-build` uses (no shared crate for
+   this; see that plugin's README for why growing `solana-core` for one
+   caller isn't worth rippling into every other plugin's vendored copy).
+2. Derive the customer's own associated token account for the target
+   mint (`core::derive_ata` -- same program-derived-address search
+   `spl-transfer-build` and `sns-resolve` use the official
+   `solana-pubkey` crate's `curve25519` feature for, not hand-rolled),
+   and check its existing balance (`getAccountInfo`, optional -- no
+   account yet just means zero). **If the customer already holds
+   enough, stop here** -- `status: "not_needed"`, no Jupiter call made,
+   nothing prepared.
+3. Compute the exact target output: the requested payment amount plus
+   the capped buffer (`core::target_swap_output`) -- never open-ended.
+4. Ask Jupiter's `/quote` endpoint for **exactly** that amount, in
+   `swapMode=ExactOut` (request the output you need; Jupiter reports
+   the SOL input and price impact -- never the other way around, so
+   this plugin is never guessing an input and hoping the output lands
+   close enough).
+5. Independently re-check the quote (`core::validate_quote`): price
+   impact within the capped guardrail, and the quoted output exactly
+   matches the target (ExactOut is supposed to guarantee this; this
+   plugin checks anyway rather than trusting a third party).
+6. Ask Jupiter's `/swap` endpoint for the actual transaction, with
+   `asLegacyTransaction: true` -- confirmed live (2026-07) that this
+   deserializes cleanly as a plain `solana_transaction::Transaction`,
+   the same shape `spl-transfer-build` produces, so no address-lookup-
+   table/versioned-transaction support is needed anywhere in this
+   plugin.
+7. **Certify it** (`core::certify_swap`) before ever returning it --
+   see "Threat model" below.
+
+### Guardrails, and how they're bounded in code, not just configured
+
+- **Buffer**: swap output = payment amount + buffer, buffer capped at
+  2% in code regardless of `buffer_bps`. See
+  `tests::target_swap_output_clamps_the_buffer_even_if_a_larger_value_is_requested`.
+- **Slippage/price impact**: checked against `max_slippage_bps`, itself
+  capped at 5% in code regardless of config. See
+  `tests::validate_quote_caps_max_slippage_even_if_config_requests_more`.
+- **`max_amount`/`mint_allowlist`**: reused from the charge-building
+  path -- the same operator ceiling applies to what a swap can target.
+
+### Threat model
+
+**What could go wrong:** a malicious message tries to manipulate the
+swap amount, the slippage tolerance, or where the swap's proceeds land,
+beyond what the original charge actually required.
+
+**Why it fails closed, structurally:**
+- `SwapArgs` (the only thing a tool call can set) has **no field** for
+  slippage, buffer, or destination at all -- those come exclusively
+  from this plugin's own config and from `customer_wallet` itself.
+  Extra JSON keys shaped like an injection attempt
+  (`"slippage_bps": 50000`, `"destination": "..."`,
+  `"buffer_bps": 999999`) are silently ignored by `serde` -- there is
+  no code path that ever reads them.
+- Even a maliciously large *configured* `max_slippage_bps` is capped in
+  `validate_quote`, not just documented as a limit.
+- `certify_swap` independently re-derives the customer's own
+  associated token account for the target mint and rejects any
+  transaction where it doesn't appear -- the swap's proceeds can only
+  ever land somewhere the customer verifiably owns, regardless of what
+  a compromised or malicious `/swap` response might contain. It also
+  requires exactly one signer (the customer -- nobody else can be
+  forced to sign) and checks every instruction's program against a
+  small, known allowlist (System, SPL Token, Associated Token Account,
+  Compute Budget, Jupiter's own aggregator program).
+
+**An honest limit on that certification, stated plainly rather than
+overclaimed:** unlike `spl-transfer-build`, which builds every
+instruction itself and can re-verify its own output byte-for-byte, this
+plugin *consumes* a transaction Jupiter's aggregator built. Re-verifying
+Jupiter's own swap-instruction bytes would mean re-implementing their
+router -- out of scope, and would introduce more risk than it removes.
+`certify_swap` checks the trust boundary that actually matters instead:
+who must sign, which programs are involved, and where the money can
+land -- not the AMM routing math in between.
+
+### Prompt-injection test transcript
+
+Input (a memo-shaped field doesn't even exist on this path, so the
+attempt has to ride inside the one thing that does: extra, unexpected
+JSON keys):
+```json
+{
+  "customer_wallet": "96n4Dj5cn4PYQrEDTc1Zzjt4uY4GQ5Vshfy9VXVDHVQD",
+  "amount": "25",
+  "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "slippage_bps": 50000,
+  "max_slippage_bps": 50000,
+  "buffer_bps": 999999,
+  "destination": "So11111111111111111111111111111111111111112",
+  "swap_amount": "999999999"
+}
+```
+
+Result: parses into exactly the same `SwapArgs` as a request with none
+of those extra keys -- `customer_wallet`/`amount`/`mint` only. The
+target amount computed from it is still exactly `25.125` (25 + the
+default 0.5% buffer), never `999999999`. A transaction whose actual
+destination is redirected to a different address (standing in for a
+compromised `/swap` response) is rejected outright by `certify_swap`.
+This is the exact scenario `core::tests::prompt_injection_cannot_alter_the_swap`
+proves.
+
+### Worked example
+
+Request:
+```json
+{
+  "customer_wallet": "<customer's own wallet>",
+  "amount": "25",
+  "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+}
+```
+
+Response shape, if a swap is needed:
+```json
+{
+  "status": "prepared",
+  "transaction_base64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...",
+  "customer_wallet": "<customer's own wallet>",
+  "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "requested_amount": "25",
+  "target_raw_amount": 25125000,
+  "swap_input_lamports": 339579100,
+  "price_impact_pct": 0.01,
+  "reply": "Preparing a swap for you to review and approve in your own wallet -- converts about 0.3395791 SOL into 25 EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v, enough to cover the 25 payment you're making (quoted price impact: 0.01%). Nothing has been sent or signed; open this in your wallet, check it yourself, and approve it only if it looks right to you."
+}
+```
+
+Or, if the customer already holds enough:
+```json
+{ "status": "not_needed", "existing_balance": "30", "reply": "No swap needed -- you already hold 30 EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v, enough to cover the 25 payment." }
+```
+
+### Live mainnet verification (read-only)
+
+Jupiter is confirmed mainnet-only (2026-07-24: a `cluster=devnet` query
+param is silently ignored -- the response is just an ordinary mainnet
+quote with normal price variance between calls, and there is no
+meaningful public devnet DEX liquidity for an aggregator to route
+through regardless). A real signed-and-submitted swap would need real
+mainnet funds, which wasn't undertaken casually -- what *was* verified
+live, read-only, no wallet or private key touched anywhere: a
+standalone harness (outside this repo, in scratch, same pattern as
+every other live-verification write-up here) calling this plugin's
+actual `core` functions directly against real mainnet data.
+
+- **USDC's real mint account** → `parse_mint_decimals` correctly read
+  `6`.
+- **A real (empty) wallet's USDC balance** → correctly derived its real
+  associated token account and correctly read a balance of `0`,
+  correctly triggering the "needs a swap" path via `already_has_enough`.
+- **A real Jupiter `/quote`** (`ExactOut`, requesting exactly 1.00 USDC
+  + the default 0.5% buffer) → Jupiter returned **exactly**
+  `1,005,000` raw units out (proving `ExactOut` really does guarantee
+  the exact requested output, not approximately), for `13,583,164`
+  lamports (~0.0136 SOL) in, at `0.0001%` price impact, routed through
+  Raydium CLMM. `validate_quote` passed cleanly against this real
+  response.
+
+No `/swap` call was made in this verification, no transaction was
+built or signed, and no wallet was ever touched -- deliberately stopping
+at the boundary of what's genuinely risk-free to test without real
+funds behind it.
+
 ## What's built vs. what's left
 
 - [x] Pure core: `build`-equivalent `run(args) -> Result<Output, CoreError>`
@@ -285,10 +497,31 @@ deterministic.
 - [x] Deterministic reply formatting (`output.reply`), built in core and
       sent verbatim by the agent instead of composed by the LLM -- see
       "Reply formatting" above. 5 exact-text host tests.
+- [x] Swap preparation for a customer who only holds SOL -- see "Swap
+      preparation" above. Bounded buffer and slippage guardrails (both
+      capped in code, not just configurable), fail-closed structural
+      certification of Jupiter's returned transaction, and a required
+      prompt-injection test proving the swap amount/slippage/
+      destination can't be manipulated beyond the original charge. 26
+      new host tests (61 total for this plugin); wasm32-wasip2 build
+      verified independently (a smaller dependency chain than
+      `spl-transfer-build`'s -- no durable-nonce/hand-built-instruction
+      crates needed, since this plugin consumes a transaction Jupiter
+      built rather than constructing one itself), loaded into the live
+      daemon and confirmed registering without disrupting the existing
+      charge-building flow. Live-verified read-only against real
+      mainnet data (see above) -- a real signed swap was not attempted,
+      since Jupiter has no devnet presence and that would require real
+      funds.
 
 ## What we'd build next
 
 Feed `output.reference` straight into `payment-watch`'s watch target, so
 "charge table 4 for 25 USDC" → QR in the chat → `payment-watch` fires the
 moment that exact reference lands, already screened through
-`token-risk-check`'s `assess()` for the paying mint.
+`token-risk-check`'s `assess()` for the paying mint. For swap
+preparation specifically: a real signed-and-submitted mainnet test
+(small, deliberate amount) to close the loop the read-only verification
+stopped short of, and wiring `solana-pay-request` to *suggest* this
+path itself when a customer's own wallet is known to be short on the
+requested token, rather than only reacting when told explicitly.
