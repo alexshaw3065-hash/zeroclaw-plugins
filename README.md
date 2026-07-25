@@ -224,6 +224,18 @@ config-enforced spend cap, a swap request trying to smuggle in a
 different destination address, and more), each with the actual test
 code and why the attack has no field to travel through.
 
+**Third-party services this depends on, declared plainly:** a Helius
+RPC endpoint (reads chain data, never holds a key); Jupiter's public
+Swap API (only ever returns an unsigned transaction, never signs or
+holds funds — used by `solana-pay-request`'s swap-prepare path);
+Groq's Whisper endpoint and Frankfurter's FX API (voice transcription
+and a display-only BRL rate, respectively — both cosmetic/interaction
+layer, neither touches a transaction). None of these can move funds or
+hold a key on this repo's behalf — if any of them is wrong, slow, or
+unreachable, the failure mode is a bad read or a missing display
+figure, never an unauthorized transfer. No MCP servers or facilitators
+are used anywhere in this submission.
+
 ---
 
 ## Reproducibility — set this up yourself in an evening

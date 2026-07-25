@@ -63,6 +63,12 @@ different destination address, and more), each with what actually
 happens and why:
 [`PROMPT_INJECTION_TRANSCRIPT.md`](https://github.com/alexshaw3065-hash/zeroclaw-plugins/blob/main/PROMPT_INJECTION_TRANSCRIPT.md)
 
+**Third-party trust, declared:** a Helius RPC endpoint, Jupiter's public
+Swap API, Groq's Whisper endpoint, and Frankfurter's FX API — none of
+them hold a key or sign anything on this repo's behalf; worst case of
+any of them failing is a bad read or a missing display figure, never an
+unauthorized transfer. No MCP servers, no facilitators.
+
 ## Reproduce this yourself
 
 Full step-by-step (build from source, install each plugin, config keys,
