@@ -16,7 +16,22 @@ bounty (Superteam Brasil).
 
 **Submission format:** a Discord showcase post (video + write-up + this
 repo), per the bounty's confirmed rule change — **not a pull request**.
-Registry merges, if any, happen separately after judging.
+Registry merges, if any, happen separately after judging. The actual
+showcase write-up lives at [`SHOWCASE.md`](./SHOWCASE.md) — this README
+is the deeper technical reference behind it.
+
+**Who this is for:** a small merchant — a table-service restaurant, a
+market stall, a shop with a WhatsApp/Telegram presence already — who
+wants to accept Solana payments without taking on the job of manually
+watching a block explorer for scam tokens on every payment. Point it at
+a chat, and it becomes the payment terminal.
+
+**Which ZeroClaw features this uses**, beyond the plugins themselves:
+the Telegram channel (voice + text), the top-level `zeroclaw cron`
+mechanism paired with the gateway REST API's `delivery.mode="announce"`
+(the unprompted "paid ✓" message), `config_read` for every plugin's
+encrypted-at-rest secrets (RPC URLs, guardrail thresholds), and OS
+service management (`zeroclaw service install`) for persistence.
 
 ---
 
@@ -48,8 +63,6 @@ change per plugin, not a rebuild, whenever real payments are wanted.
   ZeroClaw daemon, installed as a **persistent Windows scheduled task**
   (`zeroclaw service install`) — it survives reboots and logons, not
   just this session's terminal.
-- It understands voice notes as well as text (Groq Whisper in, Edge TTS
-  out) — send it a voice message and it replies the same way.
 - An unprompted "payment confirmed" message really does land in
   Telegram on its own, seconds after a real payment, with zero chat
   interaction — verified live via `zeroclaw cron` + the gateway's
@@ -58,6 +71,48 @@ change per plugin, not a rebuild, whenever real payments are wanted.
 A companion site — [fiel-site](https://fiel.vercel.app) (deploy pending)
 — and its `/docs` page explain the product for a non-technical reader;
 this README is the technical reproduction guide.
+
+---
+
+## Voice — hands-free, not a gimmick
+
+The merchant scenario this is built for is a busy counter, hands full —
+so the terminal understands voice notes exactly like typed messages, in
+either direction:
+
+- **Speech-to-text**: Groq's Whisper endpoint, via the legacy flat
+  `[transcription]` config path (see "Reproducibility," step 8, for why
+  the newer per-alias registry silently didn't register on this build).
+- **Text-to-speech**: Edge TTS (free, no API key) piped through `ffmpeg`
+  (with libopus) to produce a real Telegram voice note, not a text
+  reply with a voice icon bolted on.
+- **It's automatic, not a mode you flip**: send one voice note, and the
+  chat switches into voice-reply mode for you — every reply after that
+  comes back as a voice note too, until you type again. Real production
+  behavior, not a demo toggle.
+- **Real bug found and fixed while testing this**: very short voice
+  notes (1–2 seconds) gave Whisper too little signal and it occasionally
+  transcribed the wrong language entirely — not a ZeroClaw or plugin
+  bug, a genuine STT limitation. Documented so a reproducing operator
+  doesn't lose time on the same thing: keep voice notes to 3+ seconds.
+
+None of this touches Solana directly — it's the interaction layer the
+five plugins sit behind — but it's real, tested, and part of what makes
+this a terminal someone would actually use at a counter, not just a
+chat command.
+
+---
+
+## The Brazil touch
+
+Superteam Brasil sponsors this bounty, and `solana-pay-request` /
+`payment-watch` both carry an opt-in BRL display: set `brl_rate` and
+every invoice and confirmation shows a real-time BRL estimate alongside
+the crypto amount (Jupiter's price API × Frankfurter's daily USD→BRL
+rate, falling back to the operator's static rate on any failure — never
+a hard error over a display nicety). No PIX/bank integration — just
+making the number a Brazilian merchant actually cares about visible
+without asking them to do the math themselves.
 
 ---
 
@@ -98,6 +153,53 @@ actual reason `solana-pay-request` and `payment-watch` exist as plugins
 rather than skills, is the fused, unconditional risk check described
 above — an LLM-driven skill cannot *guarantee* a second check always
 runs; a direct Rust function call can, and does.
+
+---
+
+## The named traps, and what we actually did about them
+
+- **Blockhash expiry (trap #1).** `spl-transfer-build` supports durable
+  nonce accounts — the real fix, not a workaround. All three gotchas
+  handled: `AdvanceNonceAccount` is enforced as the first instruction,
+  rent was *measured* live rather than estimated (1,447,680 lamports for
+  an 80-byte nonce account, ≈0.00145 SOL), and the README documents that
+  one nonce account covers exactly one in-flight transaction — parallel
+  approvals need one each.
+- **The wasm dependency wall (trap #2).** Confirmed by build, not by
+  claim: the modular `solana-pubkey`/`solana-instruction`/`solana-message`/
+  `solana-transaction`/`solana-hash` crates all compile clean to
+  `wasm32-wasip2` and were used directly in `sns-resolve` (real
+  `curve25519` PDA math) and `spl-transfer-build` (real transaction
+  construction) — not hand-rolled byte encoding. The component-boundary
+  risk the brief flags as real did surface: `wasm-tools component wit`
+  against the actual compiled components confirmed one addition beyond
+  the baseline WASI surface (`wasi:random/insecure-seed`, from the
+  `curve25519-dalek` chain), independently confirmed satisfied by
+  ZeroClaw's own host wiring by reading the actual host source, not
+  assumed.
+- **Context flooding (trap #3).** Every plugin returns a short, deterministic,
+  pre-formatted reply (`format_reply`/`core::run`'s output) — never a raw
+  RPC dump. `payment-watch`'s reply is a fixed checklist + one-line
+  verdict, tested with an explicit assertion that no reply anywhere
+  contains a made-up confidence score or percentage.
+- **Fail-closed action certification** (named directly in the bounty's
+  own "custody design space" list): built into `spl-transfer-build`. After
+  constructing a transaction, it re-parses the *exact serialized wire
+  bytes* it's about to return and independently re-verifies every
+  field — fee payer, nonce, ATA creation, transfer amount/decimals/
+  destination, memo — against the original request, on every real call,
+  not just in tests. Proven by tests that hand-corrupt an
+  already-correct transaction and confirm certification rejects it.
+- **Squads v4 ("agent proposes, multisig disposes")** was investigated
+  before building anything — real program ID, PDA seeds, Anchor
+  discriminator scheme, `SmallVec` encoding all confirmed against actual
+  upstream source. Verdict: moderate complexity, hand-encoding
+  Anchor-style instructions from wasm exactly as the brief warns.
+  Deliberately not pursued this bounty — the existing use case's
+  approval path (a human reviewing a QR code or an unsigned transaction
+  directly) already satisfies the same "agent proposes, human disposes"
+  principle with far less risk, and depth on one real use case beats
+  breadth across two.
 
 ---
 
@@ -170,6 +272,18 @@ pair with the gateway (`POST /pair`), then `POST /api/cron` with a
 `delivery: {mode: "announce", channel: "<your channel>", to: "<id>"}`
 block and a prompt that calls `payment-watch` and returns the literal
 string `NO_REPLY` while pending.
+
+**8. Voice (optional)** — free, but needs three real pieces installed:
+a Groq API key set via `transcription.api_key` (the **legacy flat
+config path**, not the newer `providers.transcription.groq.<alias>`
+registry — that one silently failed to register on the ZeroClaw build
+this was tested against, even though it's the documented form; if voice
+transcription silently doesn't work, this is the first thing to check),
+the `edge-tts` Python package (`pip install edge-tts`) for replies, and
+`ffmpeg` with libopus support to transcode replies into a real Telegram
+voice note. All three were genuinely missing on a fresh machine and had
+to be installed and diagnosed live — noted here so a reproducing
+operator doesn't lose the same hour.
 
 ---
 
