@@ -14,11 +14,8 @@ This is that terminal, built as five real ZeroClaw plugins on top of
 Solana, submitted to the *"Build Solana-native plugins for ZeroClaw"*
 bounty (Superteam Brasil).
 
-**Submission format:** a Discord showcase post (video + write-up + this
-repo), per the bounty's confirmed rule change — **not a pull request**.
-Registry merges, if any, happen separately after judging. The actual
-showcase write-up lives at [`SHOWCASE.md`](./SHOWCASE.md) — this README
-is the deeper technical reference behind it.
+The actual showcase write-up lives at [`SHOWCASE.md`](./SHOWCASE.md) —
+this README is the deeper technical reference behind it.
 
 **Who this is for:** a small merchant — a table-service restaurant, a
 market stall, a shop with a WhatsApp/Telegram presence already — who
