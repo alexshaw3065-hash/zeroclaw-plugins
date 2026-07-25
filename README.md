@@ -66,9 +66,10 @@ one-line `rpc_url` config change per plugin, not a rebuild.
   interaction — verified live via `zeroclaw cron` + the gateway's
   `delivery.mode="announce"` (see "Live verification," below).
 
-A companion site — [fiel-site](https://fiel.vercel.app) (deploy pending)
-— and its `/docs` page explain the product for a non-technical reader;
-this README is the technical reproduction guide.
+A companion site — [fiel-site.vercel.app](https://fiel-site.vercel.app)
+— and its [`/docs`](https://fiel-site.vercel.app/docs) page explain the
+product for a non-technical reader; this README is the technical
+reproduction guide.
 
 ---
 

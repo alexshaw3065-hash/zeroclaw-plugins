@@ -4,7 +4,7 @@
 
 **Video:** _[link — recording pending]_
 **Repo:** https://github.com/alexshaw3065-hash/zeroclaw-plugins
-**Site:** https://fiel.vercel.app _(deploy pending)_ · docs at `/docs`
+**Site:** https://fiel-site.vercel.app · docs at https://fiel-site.vercel.app/docs
 
 ---
 
