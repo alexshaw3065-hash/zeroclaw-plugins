@@ -205,17 +205,6 @@ rather than implied.
   destination, memo — against the original request, on every real call,
   not just in tests. Proven by tests that hand-corrupt an
   already-correct transaction and confirm certification rejects it.
-- **Squads v4 ("agent proposes, multisig disposes")** was investigated
-  before building anything — real program ID, PDA seeds, Anchor
-  discriminator scheme, `SmallVec` encoding all confirmed against actual
-  upstream source. Verdict: moderate complexity, hand-encoding
-  Anchor-style instructions from wasm exactly as the brief warns.
-  Deliberately not pursued this bounty — the existing use case's
-  approval path (a human reviewing a QR code or an unsigned transaction
-  directly) already satisfies the same "agent proposes, human disposes"
-  principle with far less risk, and depth on one real use case beats
-  breadth across two.
-
 ---
 
 ## Threat model
