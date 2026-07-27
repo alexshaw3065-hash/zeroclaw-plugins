@@ -100,6 +100,3 @@ not just claimed here.
 
 ---
 
-*Built on ZeroClaw, MIT/Apache-2.0, community-maintained. This
-submission is a Discord showcase post per the bounty's confirmed
-format — not a pull request.*
