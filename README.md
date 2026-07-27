@@ -175,8 +175,7 @@ rather than implied.
 ## The named traps, and what we actually did about them
 
 - **Blockhash expiry (trap #1).** `spl-transfer-build` supports durable
-  nonce accounts — the real fix, not a workaround. All three gotchas
-  handled: `AdvanceNonceAccount` is enforced as the first instruction,
+  nonce accounts — the real fix, not a workaround. All three processes handled: `AdvanceNonceAccount` is enforced as the first instruction,
   rent was *measured* live rather than estimated (1,447,680 lamports for
   an 80-byte nonce account, ≈0.00145 SOL), and the README documents that
   one nonce account covers exactly one in-flight transaction — parallel
