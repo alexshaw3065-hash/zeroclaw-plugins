@@ -29,18 +29,6 @@ function directly, inside tested Rust, before it will ever report a
 payment as confirmed — an LLM-driven skill cannot *guarantee* a second
 check always runs; a direct Rust function call can, and does.
 
-## What we deliberately didn't use, said plainly
-
-ZeroClaw's SOP approval-checkpoint feature (a run pausing until a human
-explicitly approves a step). Every T1 plugin here routes approval
-through the *wallet* instead — a human reviews and signs a real
-transaction or scans a real QR code, rather than clicking "approve"
-inside a ZeroClaw SOP run. That's a legitimate, equally real gate
-(nothing moves without the human's own signature either way), but it
-means this submission never exercises that specific ZeroClaw feature,
-and there's no refund/reversal flow anywhere in this repo to
-demonstrate it against.
-
 ## Threat model — proven, not asserted
 
 Every plugin's own README has its full threat model in detail. The
