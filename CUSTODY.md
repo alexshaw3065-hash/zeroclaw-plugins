@@ -52,6 +52,27 @@ written, not just remembered as passing once.
   only, never touches a transaction.
 - **Frankfurter's FX API** — a display-only BRL rate. Cosmetic; falls
   back to a static operator-set value on any failure.
+- **The swap/transfer relay** — self-hosted by the operator, not a
+  third party, but listed here because it is the one component that
+  *touches a transaction*. It exists because a base64 transaction in a
+  chat message is unsignable by any phone wallet, and Solana Pay's
+  transaction-request flow — the supported fix — needs an HTTPS endpoint
+  a tool plugin cannot serve (`wit/v0/tool.wit`'s `tool` world imports
+  no `inbound`). It stores bytes for ~2 minutes and hands them back only
+  to the wallet they were prepared for. It holds no key, signs nothing,
+  and makes no decisions.
+
+**Why the relay cannot weaken custody, stated precisely.** Every
+guardrail — spend ceiling, mint allowlist, buffer cap, quote validation,
+and the fail-closed certification that re-parses the finished wire bytes
+— runs inside the pure Rust core *before* the relay is contacted. The
+transaction handed back to the caller is byte-identical whether the
+relay succeeds, fails, or is never configured; publishing is
+best-effort, and a relay that is down costs convenience, never safety. A
+compromised relay could serve a *different* transaction, but it could
+not make this repo produce one, and the human still reads and approves
+whatever their wallet shows before anything is signed. The tier is
+unchanged: bytes out, human signs.
 
 None of these can move funds or hold a key on this repo's behalf — if
 any of them is wrong, slow, or unreachable, the failure mode is a bad

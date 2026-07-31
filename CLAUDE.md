@@ -1253,6 +1253,111 @@ never see until it restarted. Rule of thumb going forward: **any
 daemon before it takes effect** -- don't spend time re-diagnosing the
 value itself first.
 
+## 2026-07-31 addendum: two bugs only real mainnet money exposed, and the relay
+
+**1. `getTokenLargestAccounts` is refused outright for widely-held
+mints, and it silently broke every real USDC payment.** Against real
+mainnet USDC on Helius: `{"code":-32600,"message":"Too many accounts
+requested (10000000 pubkeys), try adding filters to narrow down
+results"}` — reproduced by direct `curl`, independent of plugin code.
+Not a rate limit (that's the separate, already-documented devnet 429);
+a flat refusal, because the mint has too many holders to enumerate. So
+the failure lands hardest on the *most* legitimate tokens and never on
+the thin ones the check exists to catch.
+
+`fetch_mint_facts` propagated it with `?`, so the whole assessment
+failed and `payment-watch` — correctly failing closed — never confirmed
+the payment. Symptom: **silence**. A real, finalised, correctly-matched
+payment that would never confirm and could never self-resolve, because
+every 2-minute retry hit the identical error. Worth internalising: the
+fail-closed instinct was right, the mistake was treating an *optional
+enrichment signal* as mandatory. `MintFacts::top_holder_share_pct` is
+now `Option<f64>`, degrading to "unknown" — the same contract
+`lp_pool_found` already had. Tests
+`missing_holder_data_does_not_change_a_clean_verdict` and
+`missing_holder_data_cannot_mask_a_red_verdict` pin both directions.
+
+**2. Freeze authority alone is now Amber, not Red.** Circle holds an
+active freeze authority on USDC as a standard compliance control, so
+every real USDC payment was returning "DO NOT TRUST THIS PAYMENT".
+Freeze authority can block movement but, unlike a permanent delegate,
+cannot silently drain funds. **Deliberately a uniform severity rule, not
+a known-issuer allowlist** — an allowlist means maintaining a curated
+trust list forever and contradicts judging a mint on its own observable
+properties. Do not "helpfully" add a USDC/USDT exception later. A
+permanent delegate still forces Red, and the freeze *reason* is still
+reported on a Red mint even though it no longer drives severity there
+(`a_red_mint_still_reports_its_freeze_authority_reason`) — capping
+severity must not cost the reader information.
+
+**3. The relay: a base64 transaction in a chat is unsignable, and a
+plugin cannot fix that itself.** No phone wallet has a paste-and-sign
+screen, so the swap path could be *shown* but never *completed*. Solana
+Pay's **transaction request** flow is the supported fix (`solana:` URL
+pointing at an HTTPS endpoint; wallet `GET`s label/icon, `POST`s
+`{account}`, receives a transaction, shows its own approve screen). It
+needs an HTTPS endpoint the wallet calls — and **a tool plugin can never
+serve one**: `wit/v0/tool.wit`'s `tool` world imports no `inbound`
+interface. Identical conclusion to the x402 investigation above, reached
+from a completely different direction; treat "a plugin cannot receive
+inbound requests" as settled.
+
+Built as two Next.js API routes on the existing `fiel-site` Vercel
+deploy, backed by Upstash Redis (free tier, ~2min TTL — deliberately
+shorter-lived than nothing, since a Jupiter blockhash dies in 60-90s
+anyway). `solana-pay-request` and `spl-transfer-build` each POST their
+finished transaction and gain `swap_qr_url` / `transfer_qr_url`.
+
+Design points worth preserving:
+- The publish lives in the **shim**, not core — it's a network call.
+- Serialized through `serde_json::Value` so the QR field is added
+  **without** putting a delivery-layer field on the core output type;
+  the pure core still produces exactly what its tests assert.
+- **Best-effort by design.** Every guardrail already ran in core
+  (including `certify_swap` / the fail-closed certification), and the
+  returned transaction is byte-identical whether the relay works or
+  not. A relay that's down must never cost a caller a legitimate swap.
+- The relay serves a transaction **only to the wallet it was prepared
+  for**, and holds no key.
+- Component import surfaces verified unchanged with `wasm-tools
+  component wit` for both plugins.
+
+**Proven live end to end on mainnet (2026-07-31), `solana-pay-request`
+only:** customer holding 0.109383 USDC asked to pay 0.2 → shortfall
+detected → Jupiter `ExactOut` quote → swap built + certified →
+scanned from Telegram → approved in the customer's own wallet.
+Swap `4LxG8eTrmjXS1mTZaU8LSnnCHwCvh8imw24QUKKXDXeX425duYmMeFQm562htc2V4eaqXgaAJfJpBd5z7neogMg7`
+(Jupiter's `JUP6LkbZ` program present, `err: null`, balance
+`0.109383 → 0.310383` = **+0.201**, exactly the 0.2 target plus the
+0.5% buffer `target_swap_output` computes — the guardrail confirmed on
+chain, not asserted). Payment 22s later:
+`3RskmPaZYfvWU1kXP7LVK1gBKsEnww9ZrrL99vmVrnxzCHhQf1EM2agZtXGaENSK3h3tWxYS7JNosr1Kg69piWkY`
+(customer `0.310383 → 0.110383`, merchant `1.5 → 1.7`), confirmed
+unprompted by `payment-watch` as AMBER.
+
+**`spl-transfer-build`'s relay wiring is NOT yet confirmed end to end.**
+It compiles, passes 27 host tests and clippy on host+wasm, and its
+import surface is unchanged — but no scanned transfer has been watched
+through it. A real 0.05 USDC transfer did land
+(`3apPUHjqJrPPRQgKEDw98wfDCHAjKRUKbHotwbTMoXHmuwf5E2ayc2Thenaic5DToK1sjWii1vVZ6TBmmxq6fi6X`,
+customer `0.110383 → 0.060383`, merchant `1.7 → 1.75`) but the daemon
+restart rotated `runtime-trace.jsonl`, so whether it went through the
+relay QR or was sent manually **could not be determined** — don't record
+it as proof either way.
+
+**Operational gotchas found this session:**
+- `zeroclaw config set --no-interactive` takes key and value as
+  **separate arguments**; `key=value` parses as one long key and fails
+  with a misleading "Value required in --no-interactive mode".
+- **`runtime-trace.jsonl` is truncated on every daemon restart.** Old
+  evidence is gone; capture what you need before restarting.
+- Stale unpaid `cron` watchers accumulate and each tick costs 30-60s of
+  real work (WASM re-registration + several RPC calls + 2-3 LLM turns),
+  so several stale jobs measurably delay a real notification. Clear them
+  with `zeroclaw cron remove <id>` before a demo.
+- The machine's local clock is **UTC+1** while all trace timestamps are
+  UTC — cost a wasted debugging cycle comparing the two.
+
 ## Commands
 
 Run per-crate (there is no root workspace — see "Vendoring" above):

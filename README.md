@@ -276,6 +276,19 @@ unreachable, the failure mode is a bad read or a missing display
 figure, never an unauthorized transfer. No MCP servers or facilitators
 are used anywhere in this submission.
 
+One more component, self-hosted rather than third-party, but listed
+because it is the only one that *touches a transaction*: a small
+**relay** that turns a prepared swap or transfer into something a phone
+wallet can actually scan. It exists because a base64 transaction pasted
+into a chat is unsignable in practice, and Solana Pay's
+transaction-request flow — the supported fix — needs an HTTPS endpoint
+that a tool plugin cannot serve, since `wit/v0/tool.wit`'s `tool` world
+imports no `inbound` interface at all. Every guardrail runs in the Rust
+core before the relay sees anything; the transaction is byte-identical
+whether the relay works, fails, or is never configured; and it only
+hands a transaction to the wallet it was prepared for. A relay that is
+down costs convenience, never safety.
+
 Full detail on custody and threat model: [`CUSTODY.md`](./CUSTODY.md).
 
 ---
@@ -286,7 +299,7 @@ Full step-by-step: [`REPRODUCIBILITY.md`](./REPRODUCIBILITY.md). Short
 version: build ZeroClaw from source with the plugin feature flag,
 build and install each plugin, configure `rpc_url` (plus optional
 guardrails), wire a channel, and install as a persistent OS service.
-184 tests pass across all six crates, host-only, zero live network
+188 tests pass across all six crates, host-only, zero live network
 access required.
 
 ---

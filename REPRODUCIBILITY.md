@@ -67,12 +67,63 @@ voice note. All three were genuinely missing on a fresh machine and had
 to be installed and diagnosed live — noted here so a reproducing
 operator doesn't lose the same hour.
 
+**9. The swap/transfer relay (optional, but required for one-scan
+signing).** Skip this and everything still works — the plugins just
+return base64 transactions, which is fine if you sign with a CLI or your
+own tooling. You need it only if you want a customer to *scan* a
+prepared swap or transfer, because no phone wallet can sign a base64
+blob pasted into a chat.
+
+Why it has to live outside ZeroClaw: Solana Pay's *transaction request*
+flow needs an HTTPS endpoint the wallet calls, and a tool plugin cannot
+serve one — `wit/v0/tool.wit`'s `tool` world imports no `inbound`
+interface at all. This is the same platform gap documented for x402 in
+`CLAUDE.md`, not a shortcut.
+
+What we ran, and what it costs (nothing — free tiers):
+
+- Two API routes on a small Next.js app, deployed to Vercel:
+  - `POST /api/prepare-swap` — bearer-authenticated; stores a
+    transaction, returns an id, a `solana:` URL and a QR image URL.
+  - `GET|POST /api/swap/<id>` — the Solana Pay handshake. `GET` returns
+    a label and icon; `POST` receives `{account}` and returns the
+    transaction, **but only if `account` matches the wallet it was
+    prepared for**.
+- Any short-TTL key/value store behind it. We used Upstash Redis via
+  Vercel's Storage tab (free tier); it injects `KV_REST_API_URL` and
+  `KV_REST_API_TOKEN` automatically. Entries expire after ~2 minutes,
+  which is deliberate — a Jupiter swap's blockhash dies in about 60-90
+  seconds anyway, so the store should not outlive the thing it holds.
+- One secret you generate yourself, set as `SWAP_PREPARE_SECRET` on the
+  deployment and given to the plugins.
+
+Then point the plugins at it:
+
+```bash
+zeroclaw config set --no-interactive plugins.entries.solana-pay-request.config.swap_relay_url     https://<your-app>/api/prepare-swap
+zeroclaw config set --no-interactive plugins.entries.solana-pay-request.config.swap_relay_secret  <your-secret>
+zeroclaw config set --no-interactive plugins.entries.spl-transfer-build.config.transfer_relay_url    https://<your-app>/api/prepare-swap
+zeroclaw config set --no-interactive plugins.entries.spl-transfer-build.config.transfer_relay_secret <your-secret>
+```
+
+Restart the daemon afterward — plugin config is read once at startup and
+never hot-reloads (see the caveat above).
+
+**Two things that will bite you.** The `config set` syntax takes the key
+and value as *separate arguments*; `key=value` is parsed as one long key
+and fails with a confusing "Value required" error. And the relay is
+outside the trust boundary by design — every guardrail runs in the Rust
+core before it ever sees a transaction, the publish is best-effort, and
+a relay that is down costs convenience rather than safety. Treat the
+secret as a real secret anyway: anyone holding it can park a transaction
+for someone to scan.
+
 ## Running the test suite
 
-184 tests pass across all six crates, host-only, zero live network
+188 tests pass across all six crates, host-only, zero live network
 access required:
 ```bash
-(cd solana-core && cargo test)                    # 45
+(cd solana-core && cargo test)                    # 49
 (cd plugins/token-risk-check && cargo test)       # 4
 (cd plugins/solana-pay-request && cargo test)     # 61
 (cd plugins/payment-watch && cargo test)          # 39

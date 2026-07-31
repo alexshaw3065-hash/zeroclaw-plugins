@@ -29,6 +29,42 @@ invents itself -- see "Threat model" below.
 | Key | Required | Description |
 |---|---|---|
 | `rpc_url` | yes | Your Solana RPC endpoint. No key is hardcoded -- bring your own. |
+| `transfer_relay_url` | no | Full URL of a Solana Pay transaction-request relay's publish endpoint. Omit it and this plugin behaves exactly as it always has, returning base64 only. |
+| `transfer_relay_secret` | with `transfer_relay_url` | Bearer token authorising publishes. Anyone holding it can park a transaction for someone to scan -- treat it as a secret. |
+
+### Why a relay, and why it can't weaken anything
+
+A base64 transaction is unsignable in practice: no phone wallet has a
+paste-and-sign screen. Solana Pay's *transaction request* flow is the
+supported way to hand a wallet a prepared transaction, and it needs an
+HTTPS endpoint the wallet can call -- which a tool plugin can never
+serve, because `wit/v0/tool.wit`'s `tool` world imports no `inbound`
+interface at all. So the operator runs a small service, this plugin
+POSTs its finished transaction there, and the result gains a
+`transfer_qr_url` the agent renders as a scannable code.
+
+The relay sits outside the trust boundary on purpose. `core::build` has
+already re-parsed its own finished wire bytes and independently
+re-verified every field (see "Fail-closed action certification" below)
+*before* the relay is contacted, and the transaction handed back to the
+caller is byte-identical whether the publish succeeds or fails. It is
+best-effort: a relay that is down costs the one-scan convenience, never
+safety, and it cannot make an incorrect transaction look correct because
+it never sees the request that produced one. The relay is told the
+**sender** -- the account that signs -- and refuses to serve the
+transaction to any other wallet.
+
+Same ~60-90 second blockhash window applies as anywhere else: scan
+promptly, or build a fresh one. Unlike the swap path, this plugin *can*
+use a durable nonce (see below) if an approval needs to sit longer.
+
+**Status, stated honestly:** the relay wiring here is
+compile-verified, clippy-clean on host and wasm, and its import surface
+is unchanged -- but unlike `solana-pay-request`'s equivalent path, it
+has **not yet been confirmed end to end against a real scanned
+transfer**. The pattern is identical to the one proven live in
+`solana-pay-request`, which is good reason to expect it works, and not
+the same thing as having watched it work.
 
 ## Arguments
 

@@ -172,6 +172,50 @@ provider (Helius, QuickNode, Triton, etc.) with an API key. Worth calling
 out to anyone deploying this plugin: `rpc_url` needs to point at a paid
 endpoint for full risk coverage, not just the public default.
 
+**A second, worse `getTokenLargestAccounts` failure, found on mainnet
+(2026-07-31) — and the fail-open fix it forced.** A dedicated provider
+does *not* make this method universally reliable. Against real mainnet
+USDC (`EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`), Helius rejects it
+outright:
+
+```
+{"code":-32600,"message":"Too many accounts requested (10000000 pubkeys), try adding filters to narrow down results"}
+```
+
+Reproduced by direct `curl`, independent of this plugin. The cause is
+the mint being *too widely held* to enumerate — which means the failure
+lands hardest on the most legitimate, most-used tokens, and never on the
+thin, few-holder mints this check exists to catch.
+
+The consequence was severe and non-obvious: `fetch_mint_facts`
+propagated the error with `?`, so the whole risk assessment failed, and
+`payment-watch` — correctly failing closed — would never report such a
+payment as confirmed. In practice **no real mainnet USDC payment could
+ever be confirmed**, and waiting could not fix it, because every retry
+hit the identical error.
+
+`top_holder_share_pct` is now `Option<f64>`. A failed lookup degrades to
+"unknown" instead of failing the entire check — the same fail-open
+contract `lp_pool_found` already had, and for the same reason: a signal
+that could not be gathered must not be confused with a signal that came
+back bad. Two tests pin both directions
+(`missing_holder_data_does_not_change_a_clean_verdict`,
+`missing_holder_data_cannot_mask_a_red_verdict`), so absent data can
+neither invent risk on a clean mint nor launder one that is already Red.
+
+**Freeze authority is Amber, not Red (changed 2026-07-31).** It can
+block movement, but unlike a permanent delegate it cannot silently drain
+holder funds, and regulated stablecoins carry it as a standard
+compliance control — real USDC was being reported as "DO NOT TRUST THIS
+PAYMENT", which is not true and not useful. This is a uniform severity
+rule, deliberately **not** a known-issuer allowlist: an allowlist would
+mean maintaining a curated trust list forever and contradicts judging a
+mint on its own observable properties. A permanent delegate still forces
+Red regardless. The freeze reason is still *reported* on a Red mint even
+though it no longer drives the severity there — capping severity must
+not cost the reader information
+(`a_red_mint_still_reports_its_freeze_authority_reason`).
+
 ## What we'd build next
 
 Wire this plugin's `assess()` call directly into `payment-watch`, so an

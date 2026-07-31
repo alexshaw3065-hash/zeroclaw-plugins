@@ -432,9 +432,11 @@ Jupiter is confirmed mainnet-only (2026-07-24: a `cluster=devnet` query
 param is silently ignored -- the response is just an ordinary mainnet
 quote with normal price variance between calls, and there is no
 meaningful public devnet DEX liquidity for an aggregator to route
-through regardless). A real signed-and-submitted swap would need real
-mainnet funds, which wasn't undertaken casually -- what *was* verified
-live, read-only, no wallet or private key touched anywhere: a
+through regardless). A real signed-and-submitted swap needs real mainnet
+funds and wasn't undertaken casually on the day this was first written;
+it was done later, and is written up in full in the next section. What
+was verified *first*, read-only, no wallet or private key touched
+anywhere: a
 standalone harness (outside this repo, in scratch, same pattern as
 every other live-verification write-up here) calling this plugin's
 actual `core` functions directly against real mainnet data.
@@ -452,10 +454,84 @@ actual `core` functions directly against real mainnet data.
   Raydium CLMM. `validate_quote` passed cleanly against this real
   response.
 
-No `/swap` call was made in this verification, no transaction was
+No `/swap` call was made in *that* verification, no transaction was
 built or signed, and no wallet was ever touched -- deliberately stopping
 at the boundary of what's genuinely risk-free to test without real
 funds behind it.
+
+### Live mainnet verification (end to end, real funds, 2026-07-31)
+
+The swap path has since been exercised completely, with real money, on
+mainnet, through the deployed plugin inside the live daemon -- no
+harness, no mock.
+
+A customer wallet holding **0.109383 USDC** was asked to pay a
+**0.2 USDC** invoice: a genuine shortfall, not a contrived one. The
+plugin detected it via `already_has_enough`, quoted Jupiter `ExactOut`
+for the target plus the configured buffer, built the swap, and
+`certify_swap` passed it. The customer scanned it from Telegram,
+reviewed it in their own wallet, and approved it themselves.
+
+**Swap:** [`4LxG8eTrmjXS1mTZaU8LSnnCHwCvh8imw24QUKKXDXeX425duYmMeFQm562htc2V4eaqXgaAJfJpBd5z7neogMg7`](https://solscan.io/tx/4LxG8eTrmjXS1mTZaU8LSnnCHwCvh8imw24QUKKXDXeX425duYmMeFQm562htc2V4eaqXgaAJfJpBd5z7neogMg7)
+-- Jupiter's aggregator program (`JUP6LkbZ...`) in the instruction list,
+`err: null`, and the customer's USDC balance moving `0.109383 →
+0.310383`. That delta is **+0.201000**: exactly the 0.2 requested plus
+the default 0.5% buffer `target_swap_output` computes, independently
+confirming on chain that `ExactOut` delivered precisely what the
+guardrails asked for.
+
+**The payment it enabled, 22 seconds later:**
+[`3RskmPaZYfvWU1kXP7LVK1gBKsEnww9ZrrL99vmVrnxzCHhQf1EM2agZtXGaENSK3h3tWxYS7JNosr1Kg69piWkY`](https://solscan.io/tx/3RskmPaZYfvWU1kXP7LVK1gBKsEnww9ZrrL99vmVrnxzCHhQf1EM2agZtXGaENSK3h3tWxYS7JNosr1Kg69piWkY)
+-- customer `0.310383 → 0.110383`, merchant `1.5 → 1.7`. `payment-watch`
+then confirmed it unprompted, correctly reporting **AMBER** (real USDC
+carries an active freeze and mint authority).
+
+**This plugin never signed either transaction, and never held a key.**
+It built bytes; a human approved them in their own wallet. Custody tier
+is unchanged.
+
+### The delivery problem this exposed, and the relay
+
+Getting that swap into a wallet turned out to be the hard part, and it
+is worth stating plainly because it is a real platform constraint, not
+an implementation shortcut.
+
+A base64 transaction in a chat message is **unsignable in practice** --
+no phone wallet has a paste-and-sign screen. Solana Pay's
+*transaction request* flow is the supported way to hand a wallet a
+prepared transaction, and it requires an HTTPS endpoint the wallet can
+call. **A tool plugin cannot serve one:** `wit/v0/tool.wit`'s `tool`
+world imports no `inbound` interface at all, so a plugin can never
+receive a request -- the same gap already documented for x402 in the
+root `CLAUDE.md`.
+
+So the operator runs a small service and points `swap_relay_url` at it.
+The plugin POSTs its finished transaction there and adds `swap_qr_url`
+to the result; the agent renders that as a scannable code.
+
+**The relay is deliberately outside the trust boundary.** Every
+guardrail -- `max_amount`, `mint_allowlist`, `target_swap_output`'s
+buffer cap, `validate_quote`, and `certify_swap` -- has already run in
+the pure core before the relay ever sees anything, and the transaction
+returned to the caller is byte-identical whether the relay succeeds or
+fails. The publish is best-effort: a relay that is down costs
+convenience, never safety. It stores and returns opaque bytes, makes no
+decisions, and cannot make an unsafe swap look safe, because it never
+sees the request that produced one. It also refuses to serve a
+transaction to any wallet other than the `customer_wallet` it was
+prepared for.
+
+| Config key | Required? | What it is |
+|---|---|---|
+| `swap_relay_url` | no | Full URL of the relay's publish endpoint. Omit it and the plugin behaves exactly as before, returning base64 only. |
+| `swap_relay_secret` | with `swap_relay_url` | Bearer token authorising publishes. Anyone holding it can park a transaction for someone to scan, so treat it as a secret. |
+
+**One real limitation, not designed around:** a Jupiter swap carries an
+ordinary blockhash, so it stays valid roughly 60-90 seconds. The
+customer has to scan and approve promptly, or a fresh swap must be
+prepared. That is the bounty brief's own trap #1 showing up in a place
+durable nonces cannot help, since the transaction is Jupiter's to
+construct, not this plugin's.
 
 ## What's built vs. what's left
 

@@ -356,6 +356,45 @@ rejects that method outright (`429`, "Too many requests for a specific
 RPC call"), so holder-concentration scoring on the paying mint needs a
 dedicated RPC provider, not the public default.
 
+## Live mainnet verification (2026-07-31) — and the bug it caught
+
+Run against real mainnet USDC through the deployed plugin in the live
+daemon. Three real payments (1, 0.5 and 0.2 USDC) were each detected
+unprompted by a `zeroclaw cron` job and reported without anyone asking.
+
+Getting there exposed a genuine bug worth recording, because it was
+invisible in every test and only appeared against real money.
+
+`getTokenLargestAccounts` is **rejected outright by Helius for mainnet
+USDC** — not rate-limited, refused: `"Too many accounts requested
+(10000000 pubkeys)"`, because the mint is too widely held to enumerate.
+Since `fetch_mint_facts` propagated that with `?`, the fused risk check
+failed, and this plugin — correctly failing closed — refused to report
+the payment as confirmed. The user-visible symptom was silence: a real,
+finalised, correctly-matched payment that would **never** be confirmed,
+no matter how long the watcher polled, because every retry hit the same
+error.
+
+Two things are worth separating here. The fail-closed behaviour was
+right: a risk check that cannot complete must not be reported as passed.
+The *severity* was wrong: an optional enrichment signal was being
+treated as mandatory. `top_holder_share_pct` is now `Option<f64>` and
+degrades to "unknown", matching how `lp_pool_found` already worked. Full
+detail, including the tests pinning both failure directions, in
+[`token-risk-check`'s README](../token-risk-check/README.md).
+
+The matching layer was never at fault, and that is worth stating: on
+every one of these payments the checklist reported ✓ Amount matches, ✓
+Recipient verified, ✓ Reference matches, ✓ Transaction confirmed. Only
+the mint-screening step failed, and it failed loudly rather than
+silently passing.
+
+Real USDC now correctly reports **AMBER**, not RED — it carries an
+active freeze and mint authority, which are real properties worth
+surfacing but are not the theft primitive a permanent delegate is. See
+`token-risk-check`'s README for why that is a uniform severity rule
+rather than a hardcoded exception for USDC.
+
 ## What we'd build next
 
 Close the loop with `solana-pay-request`: an SOP that takes "charge table 4
