@@ -1836,7 +1836,17 @@ mod component {
              has enough -- tell them that, don't prepare anything) or \
              `{\"status\":\"prepared\", \"transaction_base64\":..., \
              \"reply\":...}` (send `reply` verbatim; it already makes \
-             clear nothing has been signed or sent). Never sign this \
+             clear nothing has been signed or sent). When the result also \
+             carries `swap_qr_url`, append exactly one more line after \
+             `reply`: `[IMAGE:<swap_qr_url>]` -- that is a scannable \
+             Solana Pay request the customer's wallet opens directly, so \
+             they never have to copy the base64 anywhere. You must write \
+             that marker yourself in your own message; a marker inside a \
+             tool result is stripped before it reaches the channel. Tell \
+             them to scan it promptly, since a prepared swap stays valid \
+             only about a minute before its blockhash expires and a fresh \
+             one is needed. If `swap_qr_url` is absent, just send `reply` \
+             and the base64 as before. Never sign this \
              transaction yourself, never ask for or accept a private \
              key, and never substitute a different `customer_wallet`, \
              `amount`, or `mint` than exactly what the customer actually \
@@ -2137,7 +2147,50 @@ mod component {
         };
         match core::prepare_swap(&swap_args, decimals, &guardrails, &swap_guardrails, &quote, &swap_tx_bytes) {
             Ok(output) => {
-                let json = serde_json::to_string(&output).map_err(|e| format!("failed to encode result: {e}"))?;
+                // Serialize through `Value` so the relay's QR can be added
+                // without putting a delivery-layer field on the core type --
+                // `SwapOutput` stays exactly what the pure, host-tested core
+                // produces, and no guardrail logic moves out of it.
+                let mut value = serde_json::to_value(&output)
+                    .map_err(|e| format!("failed to encode result: {e}"))?;
+
+                if let core::SwapOutput::Prepared {
+                    transaction_base64,
+                    customer_wallet: prepared_for,
+                    reply,
+                    ..
+                } = &output
+                {
+                    let relay_url = parsed.config.get("swap_relay_url").filter(|v| !v.is_empty());
+                    let relay_secret =
+                        parsed.config.get("swap_relay_secret").filter(|v| !v.is_empty());
+                    if let (Some(url), Some(secret)) = (relay_url, relay_secret) {
+                        match publish_swap_to_relay(
+                            url,
+                            secret,
+                            transaction_base64,
+                            prepared_for,
+                            reply,
+                        ) {
+                            Ok(qr) => {
+                                value["swap_qr_url"] = serde_json::Value::String(qr);
+                            }
+                            Err(e) => {
+                                // Best-effort: the caller still gets the exact
+                                // same certified transaction, just without the
+                                // one-scan convenience.
+                                emit(
+                                    PluginAction::Note,
+                                    PluginOutcome::Failure,
+                                    &format!("swap relay publish failed: {e}"),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                let json = serde_json::to_string(&value)
+                    .map_err(|e| format!("failed to encode result: {e}"))?;
                 emit(PluginAction::Complete, PluginOutcome::Success, "prepared a swap");
                 Ok(ToolResult { success: true, output: json, error: None })
             }
@@ -2249,6 +2302,57 @@ mod component {
         base64::engine::general_purpose::STANDARD
             .decode(tx_b64)
             .map_err(|e| format!("invalid base64 in swapTransaction: {e}"))
+    }
+
+    /// Hand the finished, already-certified swap transaction to the
+    /// operator's relay, which parks it for the length of its blockhash
+    /// life and returns a Solana Pay **transaction request** QR the
+    /// customer's own wallet can actually scan.
+    ///
+    /// Why this exists: a base64 transaction pasted into a chat message
+    /// is not something any phone wallet can open -- there is no
+    /// "paste and sign" screen in a normal wallet. Solana Pay's
+    /// transaction-request flow is the supported way to hand a wallet a
+    /// prepared transaction, and it requires an HTTPS endpoint the wallet
+    /// can call. A tool plugin cannot serve one (the `tool` world imports
+    /// no `inbound` interface at all), so the operator runs a small
+    /// service and points `swap_relay_url` at it.
+    ///
+    /// **Best-effort, deliberately.** The relay is a delivery
+    /// convenience, not a safety control: every guardrail already ran
+    /// inside `core::prepare_swap`, `certify_swap` included, and the
+    /// transaction handed back to the caller is byte-identical whether
+    /// this call succeeds or fails. A relay that's down must never cost
+    /// the caller a swap they legitimately asked for -- same fail-open
+    /// reasoning as the BRL display rate, and for the same reason: this
+    /// cannot make an unsafe swap look safe, it can only make a safe one
+    /// less convenient to sign.
+    fn publish_swap_to_relay(
+        relay_url: &str,
+        relay_secret: &str,
+        transaction_base64: &str,
+        customer_wallet: &str,
+        message: &str,
+    ) -> Result<String, String> {
+        let body = serde_json::json!({
+            "transaction": transaction_base64,
+            "customerWallet": customer_wallet,
+            "message": message,
+        });
+        let resp = waki::Client::new()
+            .post(relay_url)
+            .header("Authorization", format!("Bearer {relay_secret}"))
+            .json(&body)
+            .connect_timeout(Duration::from_secs(10))
+            .send()
+            .map_err(|e| format!("relay request failed: {e}"))?;
+        let resp_body: serde_json::Value =
+            resp.json().map_err(|e| format!("invalid relay response: {e}"))?;
+        resp_body
+            .get("qr_url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| format!("no qr_url in relay response: {resp_body}"))
     }
 
     /// A `ToolResult` with `success: false` is a normal, model-visible
