@@ -85,7 +85,7 @@ pub mod core {
                 mint: "11111111111111111111111111111111".into(),
             };
             let facts = MintFacts {
-                top_holder_share_pct: 5.0,
+                top_holder_share_pct: Some(5.0),
                 ..Default::default()
             };
             let output = run(&args, &facts).unwrap();
@@ -337,17 +337,26 @@ mod component {
         let data = account_data_from_result(&account_result).map_err(|e| e.to_string())?;
         let parsed_mint = parse_mint_account(&data).map_err(|e| e.to_string())?;
 
-        let largest_result = rpc_call(rpc_url, "getTokenLargestAccounts", json!([mint]))?;
-        let largest_amount =
-            max_token_account_amount(&largest_result).map_err(|e| e.to_string())?;
-
         // Assemble facts through the shared constructor so this plugin and
         // payment-watch can never disagree about what the same mint looks
         // like (see MintFacts::from_parsed in zeroclaw_solana_core::risk).
         Ok(MintFacts::from_parsed(
             &parsed_mint,
-            holder_share_pct(largest_amount, parsed_mint.supply),
+            fetch_top_holder_share(rpc_url, mint, parsed_mint.supply),
         ))
+    }
+
+    /// Holder concentration is an enrichment signal, not a required fact --
+    /// `getTokenLargestAccounts` is rejected outright by some RPC providers
+    /// for very widely-held mints (confirmed live: real mainnet USDC on
+    /// Helius returns "Too many accounts requested"). A failure here must
+    /// degrade to "unknown" (`None`), the same fail-open contract already
+    /// used for LP liquidity -- never fail the whole mint check over this
+    /// one optional signal.
+    fn fetch_top_holder_share(rpc_url: &str, mint: &str, supply: u64) -> Option<f64> {
+        let largest_result = rpc_call(rpc_url, "getTokenLargestAccounts", json!([mint])).ok()?;
+        let largest_amount = max_token_account_amount(&largest_result).ok()?;
+        Some(holder_share_pct(largest_amount, supply))
     }
 
     /// Best-effort liquidity-pool lookup via Dexscreener's free, no-API-

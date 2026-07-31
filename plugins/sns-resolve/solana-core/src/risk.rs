@@ -23,7 +23,15 @@ pub struct RiskReport {
 pub struct MintFacts {
     pub mint_authority_active: bool,
     pub freeze_authority_active: bool,
-    pub top_holder_share_pct: f64,
+    /// The largest single holder's share of supply, as a percentage.
+    /// `None` means this wasn't determined -- `getTokenLargestAccounts`
+    /// is rejected outright by some RPC providers for very widely-held
+    /// mints (e.g. real mainnet USDC has too many holders for Helius to
+    /// serve this call at all), so a failed lookup must degrade to
+    /// "unknown", not fail the whole check. Same fail-open contract as
+    /// `lp_pool_found` below: `assess` only ever escalates risk on a
+    /// definite `Some(pct)` over the threshold, never on `None`.
+    pub top_holder_share_pct: Option<f64>,
     pub has_permanent_delegate: bool,
     pub has_transfer_hook: bool,
     pub transfer_fee_bps: u16,
@@ -49,7 +57,7 @@ impl MintFacts {
     /// concentration into the facts `assess` scores — both `token-risk-check`
     /// and `payment-watch` build facts through here, so they can never
     /// disagree about what the same on-chain mint looks like.
-    pub fn from_parsed(parsed: &crate::token::ParsedMint, top_holder_share_pct: f64) -> Self {
+    pub fn from_parsed(parsed: &crate::token::ParsedMint, top_holder_share_pct: Option<f64>) -> Self {
         MintFacts {
             mint_authority_active: parsed.mint_authority_active,
             freeze_authority_active: parsed.freeze_authority_active,
@@ -89,20 +97,37 @@ pub fn assess(facts: &MintFacts) -> RiskReport {
         reasons.push("a permanent delegate can move holder funds without consent".to_string());
         level = RiskLevel::Red;
     }
+    // Freeze authority alone is a different, lesser risk category than a
+    // permanent delegate: it can only *block* movement (typically behind
+    // some accountability -- a regulated issuer's compliance policy, a
+    // court order), never silently drain funds the way a permanent
+    // delegate can. Real, widely-used regulated stablecoins (e.g. Circle's
+    // USDC) genuinely have active freeze authority as a standard control,
+    // not a scam signal -- Amber ("review before trusting") reflects that
+    // honestly, without hardcoding a specific-issuer allowlist. A mint
+    // that's already Red for a real theft primitive (permanent delegate)
+    // isn't downgraded by this.
     if facts.freeze_authority_active {
         reasons.push("freeze authority is still active".to_string());
-        level = RiskLevel::Red;
+        if level != RiskLevel::Red {
+            level = RiskLevel::Amber;
+        }
     }
     if facts.mint_authority_active && level != RiskLevel::Red {
         reasons.push("mint authority is still active, supply can be inflated".to_string());
         level = RiskLevel::Amber;
     }
-    if facts.top_holder_share_pct > 50.0 && level == RiskLevel::Green {
-        reasons.push(format!(
-            "top holder controls {:.0}% of supply",
-            facts.top_holder_share_pct
-        ));
-        level = RiskLevel::Amber;
+    // Holder concentration: only ever escalates on a definite answer
+    // (`Some(pct)`), never on `None` -- see MintFacts::top_holder_share_pct
+    // for why a failed lookup must not be conflated with "no concentration
+    // risk found". A lookup that never completed can't launder a mint that
+    // triggered Red for another reason (checked above), nor invent risk on
+    // its own for a mint with no other flags.
+    if let Some(pct) = facts.top_holder_share_pct {
+        if pct > 50.0 && level == RiskLevel::Green {
+            reasons.push(format!("top holder controls {pct:.0}% of supply"));
+            level = RiskLevel::Amber;
+        }
     }
     if facts.has_transfer_hook && level == RiskLevel::Green {
         reasons.push("token has a transfer hook, review what it does".to_string());
@@ -156,7 +181,7 @@ mod tests {
     #[test]
     fn clean_token_is_green() {
         let facts = MintFacts {
-            top_holder_share_pct: 10.0,
+            top_holder_share_pct: Some(10.0),
             ..Default::default()
         };
         assert_eq!(assess(&facts).level, RiskLevel::Green);
@@ -171,9 +196,29 @@ mod tests {
         assert_eq!(assess(&facts).level, RiskLevel::Red);
     }
 
+    /// Freeze authority alone (no permanent delegate) is a lesser risk
+    /// category -- it can block movement, never silently drain funds --
+    /// and real regulated stablecoins (USDC) carry it legitimately. Amber
+    /// reflects that honestly; this is a uniform severity rule, not a
+    /// specific-issuer carve-out.
     #[test]
-    fn active_freeze_authority_is_red() {
+    fn active_freeze_authority_alone_is_amber_not_red() {
         let facts = MintFacts {
+            freeze_authority_active: true,
+            ..Default::default()
+        };
+        let report = assess(&facts);
+        assert_eq!(report.level, RiskLevel::Amber);
+        assert!(report.reasons.iter().any(|r| r.contains("freeze authority")));
+    }
+
+    /// The lesser severity of freeze authority must never mask a real
+    /// theft primitive -- a permanent delegate stays Red regardless of
+    /// what else is true about the mint.
+    #[test]
+    fn freeze_authority_cannot_soften_a_permanent_delegate_verdict() {
+        let facts = MintFacts {
+            has_permanent_delegate: true,
             freeze_authority_active: true,
             ..Default::default()
         };
@@ -183,7 +228,7 @@ mod tests {
     #[test]
     fn concentrated_holders_is_amber_not_red() {
         let facts = MintFacts {
-            top_holder_share_pct: 80.0,
+            top_holder_share_pct: Some(80.0),
             ..Default::default()
         };
         assert_eq!(assess(&facts).level, RiskLevel::Amber);
@@ -200,7 +245,7 @@ mod tests {
     #[test]
     fn no_lp_pool_found_is_amber_not_green() {
         let facts = MintFacts {
-            top_holder_share_pct: 5.0,
+            top_holder_share_pct: Some(5.0),
             lp_pool_found: Some(false),
             ..Default::default()
         };
@@ -212,7 +257,7 @@ mod tests {
     #[test]
     fn thin_liquidity_is_amber() {
         let facts = MintFacts {
-            top_holder_share_pct: 5.0,
+            top_holder_share_pct: Some(5.0),
             lp_pool_found: Some(true),
             lp_liquidity_usd: Some(42.0),
             ..Default::default()
@@ -225,7 +270,7 @@ mod tests {
     #[test]
     fn healthy_liquidity_stays_green() {
         let facts = MintFacts {
-            top_holder_share_pct: 5.0,
+            top_holder_share_pct: Some(5.0),
             lp_pool_found: Some(true),
             lp_liquidity_usd: Some(1_117_249.51),
             ..Default::default()
@@ -242,7 +287,7 @@ mod tests {
     #[test]
     fn missing_lp_data_does_not_change_a_clean_verdict() {
         let facts = MintFacts {
-            top_holder_share_pct: 5.0,
+            top_holder_share_pct: Some(5.0),
             lp_pool_found: None,
             lp_liquidity_usd: None,
             ..Default::default()
@@ -274,18 +319,42 @@ mod tests {
             has_transfer_hook: true,
             transfer_fee_bps: 300,
         };
-        let facts = MintFacts::from_parsed(&parsed, 62.5);
+        let facts = MintFacts::from_parsed(&parsed, Some(62.5));
         assert!(facts.mint_authority_active);
         assert!(facts.freeze_authority_active);
         assert!(facts.has_permanent_delegate);
         assert!(facts.has_transfer_hook);
         assert_eq!(facts.transfer_fee_bps, 300);
-        assert_eq!(facts.top_holder_share_pct, 62.5);
+        assert_eq!(facts.top_holder_share_pct, Some(62.5));
         // LP status isn't part of the mint account -- from_parsed leaves
         // it unattempted, for the shim to enrich separately.
         assert_eq!(facts.lp_pool_found, None);
         assert_eq!(facts.lp_liquidity_usd, None);
         // A mint with a permanent delegate is unambiguously red.
+        assert_eq!(assess(&facts).level, RiskLevel::Red);
+    }
+
+    // ---- holder-concentration fail-open ------------------------------------
+    //
+    // `getTokenLargestAccounts` is rejected outright by some RPC providers
+    // for very widely-held mints -- found live against real mainnet USDC on
+    // Helius ("Too many accounts requested"). A failed/skipped lookup must
+    // behave exactly like the LP fail-open contract above: never invents
+    // risk on a clean mint, never launders a mint that's already Red.
+
+    #[test]
+    fn missing_holder_data_does_not_change_a_clean_verdict() {
+        let facts = MintFacts { top_holder_share_pct: None, ..Default::default() };
+        assert_eq!(assess(&facts).level, RiskLevel::Green);
+    }
+
+    #[test]
+    fn missing_holder_data_cannot_mask_a_red_verdict() {
+        let facts = MintFacts {
+            has_permanent_delegate: true,
+            top_holder_share_pct: None,
+            ..Default::default()
+        };
         assert_eq!(assess(&facts).level, RiskLevel::Red);
     }
 }

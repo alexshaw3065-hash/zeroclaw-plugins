@@ -862,7 +862,7 @@ pub mod core {
         #[test]
         fn confirm_screens_a_clean_mint_green() {
             let observed = spl_transfer(25_000_000);
-            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let facts = MintFacts { top_holder_share_pct: Some(5.0), ..Default::default() };
             let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, None);
             assert_eq!(out.status, "paid");
             assert_eq!(out.risk_level.as_deref(), Some("green"));
@@ -875,7 +875,7 @@ pub mod core {
         #[test]
         fn a_paid_result_always_carries_a_fully_verified_trust_report() {
             let observed = spl_transfer(25_000_000);
-            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let facts = MintFacts { top_holder_share_pct: Some(5.0), ..Default::default() };
             let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, None);
             let report = out.trust_report;
             assert!(report.recipient_verified);
@@ -891,7 +891,7 @@ pub mod core {
             let mut args = args_for("25", Some(USDC));
             args.reference = Some(REFERENCE.to_string());
             let observed = spl_transfer(25_000_000); // has_reference: true
-            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let facts = MintFacts { top_holder_share_pct: Some(5.0), ..Default::default() };
             let out = confirm(&args, &observed, &facts, None);
             assert_eq!(out.trust_report.reference_verified, Some(true));
         }
@@ -957,7 +957,7 @@ pub mod core {
         #[test]
         fn confirm_includes_brl_estimate_when_rate_configured() {
             let observed = spl_transfer(25_000_000);
-            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let facts = MintFacts { top_holder_share_pct: Some(5.0), ..Default::default() };
             let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, Some(5.60));
             assert_eq!(out.brl_estimate.as_deref(), Some("R$140.00"));
         }
@@ -965,7 +965,7 @@ pub mod core {
         #[test]
         fn reply_includes_an_est_line_when_brl_estimate_is_present() {
             let observed = spl_transfer(25_000_000);
-            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let facts = MintFacts { top_holder_share_pct: Some(5.0), ..Default::default() };
             let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, Some(5.60));
             assert!(out.reply.contains("Est.: R$140.00"));
         }
@@ -973,7 +973,7 @@ pub mod core {
         #[test]
         fn reply_has_no_est_line_when_brl_estimate_is_absent() {
             let observed = spl_transfer(25_000_000);
-            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let facts = MintFacts { top_holder_share_pct: Some(5.0), ..Default::default() };
             let out = confirm(&args_for("25", Some(USDC)), &observed, &facts, None);
             assert!(!out.reply.contains("Est.:"));
         }
@@ -1005,7 +1005,7 @@ pub mod core {
         #[test]
         fn reply_green_case_exact_text() {
             let observed = spl_transfer(25_000_000);
-            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let facts = MintFacts { top_holder_share_pct: Some(5.0), ..Default::default() };
             let mut args = args_for("25", Some(USDC));
             args.reference = Some(REFERENCE.to_string());
             let out = confirm(&args, &observed, &facts, None);
@@ -1047,7 +1047,7 @@ pub mod core {
         #[test]
         fn red_reply_is_not_a_downgraded_green_reply() {
             let observed = spl_transfer(25_000_000);
-            let green_facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let green_facts = MintFacts { top_holder_share_pct: Some(5.0), ..Default::default() };
             let red_facts = MintFacts { has_permanent_delegate: true, ..Default::default() };
             let args = args_for("25", Some(USDC));
             let green = confirm(&args, &observed, &green_facts, None);
@@ -1103,7 +1103,7 @@ pub mod core {
         #[test]
         fn reply_never_contains_a_percentage_or_score() {
             let observed = spl_transfer(25_000_000);
-            let facts = MintFacts { top_holder_share_pct: 5.0, ..Default::default() };
+            let facts = MintFacts { top_holder_share_pct: Some(5.0), ..Default::default() };
             let paid = confirm(&args_for("25", Some(USDC)), &observed, &facts, None);
             let not_paid = pending(&args_for("25", Some(USDC)), &[]);
             for reply in [&paid.reply, &not_paid.reply] {
@@ -1362,13 +1362,23 @@ mod component {
         let data = account_data_from_result(&account_result).map_err(|e| e.to_string())?;
         let parsed_mint = parse_mint_account(&data).map_err(|e| e.to_string())?;
 
-        let largest_result = rpc_call(rpc_url, "getTokenLargestAccounts", json!([mint]))?;
-        let largest_amount = max_token_account_amount(&largest_result).map_err(|e| e.to_string())?;
-
         Ok(MintFacts::from_parsed(
             &parsed_mint,
-            holder_share_pct(largest_amount, parsed_mint.supply),
+            fetch_top_holder_share(rpc_url, mint, parsed_mint.supply),
         ))
+    }
+
+    /// Holder concentration is an enrichment signal, not a required fact --
+    /// `getTokenLargestAccounts` is rejected outright by some RPC providers
+    /// for very widely-held mints (confirmed live: real mainnet USDC on
+    /// Helius returns "Too many accounts requested"). A failure here must
+    /// degrade to "unknown" (`None`), the same fail-open contract already
+    /// used for LP liquidity -- never fail the whole mint check over this
+    /// one optional signal.
+    fn fetch_top_holder_share(rpc_url: &str, mint: &str, supply: u64) -> Option<f64> {
+        let largest_result = rpc_call(rpc_url, "getTokenLargestAccounts", json!([mint])).ok()?;
+        let largest_amount = max_token_account_amount(&largest_result).ok()?;
+        Some(holder_share_pct(largest_amount, supply))
     }
 
     /// One JSON-RPC round trip over the host's `wasi:http` (via blocking
