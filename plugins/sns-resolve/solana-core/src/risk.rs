@@ -225,6 +225,25 @@ mod tests {
         assert_eq!(assess(&facts).level, RiskLevel::Red);
     }
 
+    /// Capping freeze authority's *severity* must not cost the reader the
+    /// *information*: a mint that is Red for a permanent delegate and also
+    /// carries freeze authority has to report both, or a Red verdict would
+    /// silently understate what was actually found. `payment-watch`'s
+    /// README documents exactly this two-reason output, so this test is
+    /// what keeps that example honest.
+    #[test]
+    fn a_red_mint_still_reports_its_freeze_authority_reason() {
+        let facts = MintFacts {
+            has_permanent_delegate: true,
+            freeze_authority_active: true,
+            ..Default::default()
+        };
+        let report = assess(&facts);
+        assert_eq!(report.level, RiskLevel::Red);
+        assert!(report.reasons.iter().any(|r| r.contains("permanent delegate")));
+        assert!(report.reasons.iter().any(|r| r.contains("freeze authority")));
+    }
+
     #[test]
     fn concentrated_holders_is_amber_not_red() {
         let facts = MintFacts {
