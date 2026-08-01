@@ -1,0 +1,180 @@
+# Sample ZeroClaw config for the Fiel payment terminal
+#
+# This is the real live config with every secret replaced. It is here so
+# another operator can see the exact shape rather than reconstruct it --
+# the step-by-step is in REPRODUCIBILITY.md.
+#
+# Anything marked <REDACTED> or <YOUR-...> is yours to fill in. Do not
+# paste secrets into this file: set them with
+#   zeroclaw config set --no-interactive <key> <value>
+# which stores them encrypted at rest (they appear as `enc2:...` in the
+# real config, which is why they show as redacted here).
+#
+# Note the argument form -- key and value are SEPARATE arguments.
+# `key=value` is parsed as one long key and fails with a misleading
+# "Value required in --no-interactive mode".
+
+schema_version = 3
+
+[plugins]
+enabled = true
+
+[providers.tts.edge.default]
+voice = "en-US-AriaNeural"
+
+[providers.transcription.groq.default]
+api_key = "<REDACTED>"
+
+[providers.models.xai.default]
+api_key = "<REDACTED>"
+model = "grok-4.5"
+fallback = ["ollama.default"]
+
+[providers.models.groq.default]
+api_key = "<REDACTED>"
+model = "llama-3.3-70b-versatile"
+fallback = ["ollama.default"]
+
+[risk_profiles.cron]
+allowed_commands = ["git", "npm", "cargo", "echo", "dir", "type", "findstr", "where", "more", "date", "ls", "cat", "grep", "find", "pwd", "wc", "head", "tail", "df", "du", "uname", "uptime", "hostname", "python", "python3", "pip", "node"]
+auto_approve = ["payment-watch", "token-risk-check", "solana-pay-request", "send_via", "cron_add", "spl-transfer-build", "sns-resolve"]
+block_high_risk_commands = true
+forbidden_paths = ['C:\Windows', 'C:\Windows\System32', 'C:\Program Files', 'C:\Program Files (x86)', 'C:\ProgramData', "~/.ssh", "~/.gnupg", "~/.aws", "~/.config"]
+level = "supervised"
+require_approval_for_medium_risk = true
+workspace_only = true
+excluded_tools = ["always_fails", "ask_user", "backup", "browser", "browser_delegate", "browser_open", "calculator", "canvas", "channel_room", "claude_code", "claude_code_runner", "cloud_ops", "cloud_patterns", "codex_cli", "composio", "content_search", "counting", "data_management", "discord_search", "email_read", "email_search", "escalate_to_human", "execute_pipeline", "fake", "file_download", "file_edit", "file_upload", "file_upload_bundle", "file_write", "gemini_cli", "git", "git_forge", "git_operations", "glob_search", "google_workspace", "hardware_board_info", "hardware_memory_map", "hardware_memory_read", "http_request", "image_gen", "image_info", "jira", "knowledge", "linkedin", "llm_task", "matrix", "mcp_prompts", "mcp_resources", "memory_export", "memory_forget", "memory_purge", "memory_recall", "memory_store", "microsoft365", "mock", "model_routing_config", "notion", "opencode_cli", "poll", "project_intel", "proxy_config", "pushover", "query_echo", "reaction", "report_template", "screenshot", "sessions_current", "sessions_delete", "sessions_history", "sessions_list", "sessions_reset", "sessions_send", "text_browser", "tool_search", "weather", "web_fetch", "web_search_tool", "time", "send_via", "sop_execute", "sop_status", "sop_advance", "sop_approve", "sop_workshop", "cron_list", "cron_update", "cron_delete", "cron_pause", "cron_resume"]
+
+[agents.assistant]
+acp_enable_mcp = false
+delegate_same_risk_profile = true
+enabled = true
+model_provider = "xai.default"
+channels = ["telegram.default"]
+risk_profile = "cron"
+transcription_provider = "groq"
+tts_provider = "edge.default"
+
+[risk_profiles.cron.delegation_policy]
+mode = "forbidden"
+
+[providers.models.ollama.default]
+model = "qwen2.5:0.5b"
+
+[providers.tts]
+
+[providers.tts.edge]
+
+[providers.transcription]
+
+[providers.transcription.groq]
+
+[providers.models.xai]
+
+[providers.models.groq]
+
+[agents.assistant.a2a]
+published = false
+
+[peer_groups.owner]
+admin_for_agent_scope = false
+channel = "telegram.default"
+output_modality = "mirror"
+external_peers = ["<YOUR-CHAT-ID>"]
+
+[agents.assistant.identity]
+format = "openclaw"
+
+[channels.telegram.default]
+api_base_url = "https://api.telegram.org"
+approval_timeout_secs = 120
+draft_update_interval_ms = 1000
+enabled = true
+interrupt_on_new_message = false
+mention_only = false
+reply_min_interval_secs = 0
+reply_queue_depth_max = 0
+stream_mode = "off"
+bot_token = "<REDACTED>"
+
+[tts]
+enabled = true
+
+[transcription]
+enabled = true
+api_key = "<REDACTED>"
+
+[gateway]
+paired_tokens = ["<REDACTED — set with `zeroclaw config set`, encrypted at rest>"]
+
+[security]
+
+[security.leak_detection]
+high_entropy_tokens = false
+sensitivity = 0.5
+
+[risk_profiles]
+
+[sop]
+sops_dir = 'C:\Users\User\.zeroclaw\data\sops'
+maintenance_interval_secs = 30
+
+[agents]
+
+[agents.assistant.memory]
+backend = "sqlite"
+
+[providers]
+
+[agents.assistant.precheck]
+enabled = true
+timeout_secs = 5
+
+[providers.models]
+
+[agents.assistant.workspace]
+unrestricted_filesystem = false
+
+[providers.models.ollama]
+
+[peer_groups]
+
+[[plugins.entries]]
+name = "token-risk-check"
+
+[plugins.entries.config]
+rpc_url = "https://mainnet.helius-rpc.com/?api-key=<YOUR-KEY>"
+
+[[plugins.entries]]
+name = "solana-pay-request"
+
+[plugins.entries.config]
+brl_rate = "5.20"   # optional: BRL per unit, fallback when the live rate lookup fails
+rpc_url = "https://mainnet.helius-rpc.com/?api-key=<YOUR-KEY>"
+swap_relay_url = "https://<your-relay-host>/api/prepare-swap"
+swap_relay_secret = "<REDACTED>"
+
+[[plugins.entries]]
+name = "payment-watch"
+
+[plugins.entries.config]
+rpc_url = "https://mainnet.helius-rpc.com/?api-key=<YOUR-KEY>"
+brl_rate = "5.20"   # optional: BRL per unit, fallback when the live rate lookup fails
+
+[[plugins.entries]]
+name = "sns-resolve"
+
+[plugins.entries.config]
+rpc_url = "https://mainnet.helius-rpc.com/?api-key=<YOUR-KEY>"
+
+[[plugins.entries]]
+name = "spl-transfer-build"
+
+[plugins.entries.config]
+rpc_url = "https://mainnet.helius-rpc.com/?api-key=<YOUR-KEY>"
+transfer_relay_url = "https://<your-relay-host>/api/prepare-swap"
+transfer_relay_secret = "<REDACTED>"
+
+[channels]
+
+[channels.telegram]

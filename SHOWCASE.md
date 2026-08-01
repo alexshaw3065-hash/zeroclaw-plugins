@@ -79,10 +79,23 @@ unauthorized transfer. No MCP servers, no facilitators.
 ## Reproduce this yourself
 
 Full step-by-step (build from source, install each plugin, config keys,
-persistent service, the two Windows gotchas we hit ourselves) in
+persistent service, the relay, and the gotchas we hit ourselves) in
 [`REPRODUCIBILITY.md`](https://github.com/alexshaw3065-hash/zeroclaw-plugins/blob/main/REPRODUCIBILITY.md).
 188 tests pass across all six crates, host-only, zero live network
 access required.
+
+Everything an operator needs is in the repo, nothing withheld:
+
+- **Config** — [`config.sample.toml`](https://github.com/alexshaw3065-hash/zeroclaw-plugins/blob/main/config.sample.toml),
+  this deployment's *actual* `~/.zeroclaw/config.toml` with secrets
+  stripped. Not an idealised example: every plugin entry, guardrail,
+  risk profile and channel setting exactly as it really runs.
+- **Relay source** — [`relay/`](https://github.com/alexshaw3065-hash/zeroclaw-plugins/tree/main/relay),
+  ~320 lines of TypeScript, with a README on why it cannot live inside a
+  plugin and why it cannot weaken custody.
+- **Plugin source** — [`plugins/`](https://github.com/alexshaw3065-hash/zeroclaw-plugins/tree/main/plugins),
+  five crates, each with its own README, threat model, and tests.
+- **Prompt-injection transcript** — [`PROMPT_INJECTION_TRANSCRIPT.md`](https://github.com/alexshaw3065-hash/zeroclaw-plugins/blob/main/PROMPT_INJECTION_TRANSCRIPT.md).
 
 ## Two things real money taught us that tests never would
 

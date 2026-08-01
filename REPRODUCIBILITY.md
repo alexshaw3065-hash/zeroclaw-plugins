@@ -1,5 +1,12 @@
 # Reproducibility — set this up yourself in an evening
 
+**The real config, with secrets stripped:**
+[`config.sample.toml`](./config.sample.toml). That is this deployment's
+actual `~/.zeroclaw/config.toml`, not an idealised example — every
+plugin entry, guardrail, risk profile and channel setting as it really
+runs, with encrypted values replaced by placeholders. The relay's own
+source is at [`relay/`](./relay).
+
 **1. Build ZeroClaw from source** (plugins aren't in the stock release
 binary):
 ```bash
@@ -79,6 +86,10 @@ flow needs an HTTPS endpoint the wallet calls, and a tool plugin cannot
 serve one — `wit/v0/tool.wit`'s `tool` world imports no `inbound`
 interface at all. This is the same platform gap documented for x402 in
 `CLAUDE.md`, not a shortcut.
+
+**The source is in this repo, at [`relay/`](./relay)** — ~320 lines of
+TypeScript, plus a README explaining why it can't live inside a plugin
+and why it can't weaken custody. Copy it into any Next.js app.
 
 What we ran, and what it costs (nothing — free tiers):
 
