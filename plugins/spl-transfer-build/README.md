@@ -58,13 +58,14 @@ Same ~60-90 second blockhash window applies as anywhere else: scan
 promptly, or build a fresh one. Unlike the swap path, this plugin *can*
 use a durable nonce (see below) if an approval needs to sit longer.
 
-**Status, stated honestly:** the relay wiring here is
-compile-verified, clippy-clean on host and wasm, and its import surface
-is unchanged -- but unlike `solana-pay-request`'s equivalent path, it
-has **not yet been confirmed end to end against a real scanned
-transfer**. The pattern is identical to the one proven live in
-`solana-pay-request`, which is good reason to expect it works, and not
-the same thing as having watched it work.
+**Proven live on mainnet, end to end (2026-07-31).** A real 0.05 USDC
+transfer was built by this plugin, published to the relay, scanned as a
+QR from Telegram, approved in the sender's own wallet, and confirmed on
+chain:
+[`3apPUHjqJrPPRQgKEDw98wfDCHAjKRUKbHotwbTMoXHmuwf5E2ayc2Thenaic5DToK1sjWii1vVZ6TBmmxq6fi6X`](https://solscan.io/tx/3apPUHjqJrPPRQgKEDw98wfDCHAjKRUKbHotwbTMoXHmuwf5E2ayc2Thenaic5DToK1sjWii1vVZ6TBmmxq6fi6X)
+-- `err: null`, sender `0.110383 → 0.060383`, recipient `1.7 → 1.75`.
+This plugin never signed it and never held a key; it produced bytes, and
+a human approved them in their own wallet.
 
 ## Arguments
 

@@ -1335,15 +1335,21 @@ chain, not asserted). Payment 22s later:
 (customer `0.310383 → 0.110383`, merchant `1.5 → 1.7`), confirmed
 unprompted by `payment-watch` as AMBER.
 
-**`spl-transfer-build`'s relay wiring is NOT yet confirmed end to end.**
-It compiles, passes 27 host tests and clippy on host+wasm, and its
-import surface is unchanged — but no scanned transfer has been watched
-through it. A real 0.05 USDC transfer did land
+**`spl-transfer-build`'s relay path is also proven end to end**, on the
+same day: a real 0.05 USDC transfer built by the plugin, published to
+the relay, **scanned as a QR** and approved in the sender's own wallet
 (`3apPUHjqJrPPRQgKEDw98wfDCHAjKRUKbHotwbTMoXHmuwf5E2ayc2Thenaic5DToK1sjWii1vVZ6TBmmxq6fi6X`,
-customer `0.110383 → 0.060383`, merchant `1.7 → 1.75`) but the daemon
-restart rotated `runtime-trace.jsonl`, so whether it went through the
-relay QR or was sent manually **could not be determined** — don't record
-it as proof either way.
+sender `0.110383 → 0.060383`, recipient `1.7 → 1.75`).
+
+Worth recording *how* that got confirmed, because it nearly went in the
+docs wrong. The daemon restart had rotated `runtime-trace.jsonl`, so the
+relay-publish evidence was gone, and the on-chain transaction alone
+could not distinguish "scanned our QR" from "sent manually from the
+wallet" — both routes produce an identical-looking transfer, including
+the wallet-injected Lighthouse guard instructions. It was written up as
+**unconfirmed** rather than assumed, and only corrected once the
+operator confirmed directly that they scanned it. When trace evidence is
+gone, ask; don't infer from a plausible-looking chain artifact.
 
 **Operational gotchas found this session:**
 - `zeroclaw config set --no-interactive` takes key and value as

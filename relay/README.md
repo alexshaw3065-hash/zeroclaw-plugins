@@ -90,8 +90,15 @@ park a transaction for someone to scan.
 
 ## Status
 
-The `solana-pay-request` path is **proven live end to end on mainnet**
-with real funds (signature and balance deltas in that plugin's README).
-The `spl-transfer-build` path uses the identical mechanism but has
-**not** been confirmed against a real scanned transfer — stated plainly
-rather than implied by association.
+Both paths are **proven live end to end on mainnet with real funds** —
+prepared by a plugin, published here, scanned as a QR from Telegram,
+approved in the customer's own wallet, and confirmed on chain. Real
+signatures and balance deltas are in each plugin's README:
+[`solana-pay-request`](../plugins/solana-pay-request/README.md) (a swap,
+where the balance delta independently confirms the guardrail's 0.5%
+buffer) and
+[`spl-transfer-build`](../plugins/spl-transfer-build/README.md) (a
+transfer).
+
+The relay signed nothing in either case. It stored bytes for under two
+minutes and handed them to one specific wallet.

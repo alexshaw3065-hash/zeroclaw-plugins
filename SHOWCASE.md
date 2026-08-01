@@ -2,7 +2,7 @@
 
 *"Evidence before trust."*
 
-**Video:** _[link, recording pending]_
+**Video:** https://youtu.be/6jucJgM_AjU
 **Repo:** https://github.com/alexshaw3065-hash/zeroclaw-plugins
 **Site:** https://fiel-site.vercel.app · docs at https://fiel-site.vercel.app/docs
 **X:** https://x.com/0xviktor4
@@ -162,6 +162,16 @@ chain rather than asserted. Twenty-two seconds later the payment
 [`3RskmPaZ…piWkY`](https://solscan.io/tx/3RskmPaZYfvWU1kXP7LVK1gBKsEnww9ZrrL99vmVrnxzCHhQf1EM2agZtXGaENSK3h3tWxYS7JNosr1Kg69piWkY)
 landed, and `payment-watch` confirmed it unprompted with the correct
 AMBER verdict. Nothing in this repo signed either transaction.
+
+**The sending side, same day, same mechanism.** A 0.05 USDC transfer
+built by `spl-transfer-build`, published as a scannable request,
+approved in the sender's own wallet:
+[`3apPUHjq…q6fi6X`](https://solscan.io/tx/3apPUHjqJrPPRQgKEDw98wfDCHAjKRUKbHotwbTMoXHmuwf5E2ayc2Thenaic5DToK1sjWii1vVZ6TBmmxq6fi6X)
+— sender `0.110383 → 0.060383`, recipient `1.7 → 1.75`. Before returning
+those bytes, the plugin re-parsed its own finished wire format and
+independently re-verified every field against the original request; had
+anything mismatched it would have returned an error instead of a
+transaction.
 
 **The live deployment runs on mainnet now**: real Helius mainnet RPC,
 confirmed with real calls (real slot numbers, a real live `sns-resolve`
